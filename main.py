@@ -162,6 +162,11 @@ def create_app(runtime: Runtime) -> web.Application:
         retry_task: Optional[asyncio.Task[None]] = None
         try:
             await set_commands(runtime.bot)
+            # Source polling runs regardless of webhook registration: it needs
+            # only outbound HTTP, so leads keep arriving even while Telegram
+            # registration is being retried.
+            if runtime.poller is not None:
+                await runtime.poller.start()
             # Serving /health matters even when registration fails: the host keeps
             # the deploy alive and the background task registers the webhook once
             # Telegram is reachable again.

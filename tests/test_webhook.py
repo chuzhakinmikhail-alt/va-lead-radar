@@ -46,6 +46,9 @@ class FakeRuntime:
         self.db = db
         self.bot = FakeBot()
         self.dispatcher = Dispatcher()
+        # create_app starts the poller when present; None keeps the test offline.
+        self.poller = None
+        self.userbot = None
 
     async def shutdown(self) -> None:  # pragma: no cover - not reached in tests
         pass

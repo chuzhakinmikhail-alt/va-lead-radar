@@ -31,7 +31,7 @@ async def _reset(db) -> None:
     if isinstance(db, SQLiteDatabase):
         return
     async with db.pool.acquire() as conn:
-        await conn.execute("TRUNCATE chats, keywords, leads")
+        await conn.execute("TRUNCATE chats, keywords, leads, sources")
 
 
 @pytest.mark.asyncio
@@ -106,6 +106,76 @@ async def test_migrate_is_idempotent(backend):
         await db.migrate()
         await db.migrate()
         assert await db.add_chat(-1001, "Group A") is True
+
+
+@pytest.mark.asyncio
+async def test_source_lifecycle(backend):
+    async with backend as db:
+        await _reset(db)
+
+        assert await db.add_source("rss", "https://x/feed", "Feed") is True
+        assert await db.add_source("rss", "https://x/feed", "Feed") is False
+
+        rows = await db.list_sources()
+        assert len(rows) == 1
+        assert rows[0].source_id == "rss:https://x/feed"
+        assert rows[0].kind == "rss"
+        assert rows[0].title == "Feed"
+        assert rows[0].paused is False
+
+        assert await db.set_source_paused("rss:https://x/feed", True) is True
+        assert await db.list_sources(include_paused=False) == []
+        assert (await db.get_source("rss:https://x/feed")).paused is True
+
+        assert await db.remove_source("rss:https://x/feed") is True
+        assert await db.get_source("rss:https://x/feed") is None
+        assert await db.remove_source("rss:https://x/feed") is False
+
+
+@pytest.mark.asyncio
+async def test_add_source_requires_kind_and_target(backend):
+    async with backend as db:
+        await _reset(db)
+        assert await db.add_source("", "https://x") is False
+        assert await db.add_source("rss", "   ") is False
+
+
+@pytest.mark.asyncio
+async def test_seed_sources_only_when_empty(backend):
+    async with backend as db:
+        await _reset(db)
+        defaults = (("rss", "https://x/feed", "Feed"),)
+        assert await db.seed_sources(defaults) == 1
+        assert await db.seed_sources(defaults) == 0
+
+
+@pytest.mark.asyncio
+async def test_external_lead_roundtrip(backend):
+    async with backend as db:
+        await _reset(db)
+        assert (
+            await db.record_lead(
+                "hash-ext",
+                0,
+                0,
+                True,
+                "нужен бот",
+                "заказ",
+                source="tg_public:orders",
+                url="https://t.me/orders/1",
+                author="orders",
+                contact="Telegram: @dev_ivan",
+            )
+            is True
+        )
+        # The same hash must be rejected: this is the anti-duplicate guarantee.
+        assert await db.record_lead("hash-ext", 0, 0, True) is False
+        assert await db.is_duplicate("hash-ext") is True
+
+        stats = await db.stats()
+        assert stats["sources"] == 0
+        assert stats["analysed"] == 1
+        assert stats["leads"] == 1
 
 
 def test_message_hash_is_stable_and_unique():

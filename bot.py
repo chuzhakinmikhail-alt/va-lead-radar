@@ -32,6 +32,11 @@ async def run() -> None:
     me = await runtime.bot.get_me()
     logger.info("Bot authorised as @%s (id=%s)", me.username, me.id)
 
+    # Source polling runs alongside updates, so the bot finds orders on its own
+    # even in chats it was never added to.
+    if runtime.poller is not None:
+        await runtime.poller.start()
+
     try:
         # Long polling replaces any webhook for this token; that is intended here.
         await runtime.bot.delete_webhook(drop_pending_updates=False)

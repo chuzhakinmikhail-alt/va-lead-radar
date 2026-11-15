@@ -37,6 +37,15 @@ services:
       # Adopt every chat the bot is added to, without /addchat. /pause excludes one.
       - key: MONITOR_ALL_CHATS
         value: "false"
+      # Find orders on freelance boards and in public Telegram channels without
+      # being added anywhere. Set POLL_SOURCES=false to disable polling.
+      - key: POLL_SOURCES
+        value: "true"
+      - key: POLL_INTERVAL
+        value: "900"
+      # Seed starter sources and broad keywords on first run.
+      - key: SEED_DEFAULT_SOURCES
+        value: "true"
       # Uncomment to use an OpenAI-compatible gateway (e.g. OpenRouter) instead:
       # - key: OPENAI_BASE_URL
       #   value: https://openrouter.ai/api/v1

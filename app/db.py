@@ -11,9 +11,13 @@ Tables
 chats    : chats/channels being monitored. ``paused`` excludes a chat from
            monitoring without deleting it, which matters in auto mode: a deleted
            chat would simply be re-registered on its next message.
+sources  : external places polled on a schedule — a freelance board's RSS feed,
+           a public Telegram channel's web preview, or a userbot chat/search.
 keywords : trigger keywords (case-insensitive, stored lowercased).
 leads    : every analysed message; the primary key doubles as anti-duplicate
-           protection so one message is never forwarded twice.
+           protection so one message is never forwarded twice. Rows coming from
+           ``sources`` carry ``source``, ``url``, ``author`` and ``contact`` so a
+           card can always point somewhere useful.
 """
 
 from __future__ import annotations
@@ -36,6 +40,15 @@ CREATE TABLE IF NOT EXISTS chats (
     paused     INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS sources (
+    source_id  TEXT    PRIMARY KEY,
+    kind       TEXT    NOT NULL,
+    target     TEXT    NOT NULL,
+    title      TEXT    NOT NULL DEFAULT '',
+    paused     INTEGER NOT NULL DEFAULT 0,
+    added_at   TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS keywords (
     keyword    TEXT PRIMARY KEY,
     added_at   TEXT NOT NULL
@@ -43,11 +56,15 @@ CREATE TABLE IF NOT EXISTS keywords (
 
 CREATE TABLE IF NOT EXISTS leads (
     msg_hash   TEXT PRIMARY KEY,
-    chat_id    INTEGER NOT NULL,
-    message_id INTEGER NOT NULL,
+    chat_id    INTEGER NOT NULL DEFAULT 0,
+    message_id INTEGER NOT NULL DEFAULT 0,
     is_lead    INTEGER NOT NULL,
     summary    TEXT    NOT NULL DEFAULT '',
     intent     TEXT    NOT NULL DEFAULT '',
+    source     TEXT    NOT NULL DEFAULT '',
+    url        TEXT    NOT NULL DEFAULT '',
+    author     TEXT    NOT NULL DEFAULT '',
+    contact    TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL
 );
 
@@ -62,6 +79,15 @@ CREATE TABLE IF NOT EXISTS chats (
     paused     INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS sources (
+    source_id  TEXT    PRIMARY KEY,
+    kind       TEXT    NOT NULL,
+    target     TEXT    NOT NULL,
+    title      TEXT    NOT NULL DEFAULT '',
+    paused     INTEGER NOT NULL DEFAULT 0,
+    added_at   TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS keywords (
     keyword    TEXT PRIMARY KEY,
     added_at   TEXT NOT NULL
@@ -69,11 +95,15 @@ CREATE TABLE IF NOT EXISTS keywords (
 
 CREATE TABLE IF NOT EXISTS leads (
     msg_hash   TEXT PRIMARY KEY,
-    chat_id    BIGINT NOT NULL,
-    message_id BIGINT NOT NULL,
+    chat_id    BIGINT NOT NULL DEFAULT 0,
+    message_id BIGINT NOT NULL DEFAULT 0,
     is_lead    INTEGER NOT NULL,
     summary    TEXT   NOT NULL DEFAULT '',
     intent     TEXT   NOT NULL DEFAULT '',
+    source     TEXT   NOT NULL DEFAULT '',
+    url        TEXT   NOT NULL DEFAULT '',
+    author     TEXT   NOT NULL DEFAULT '',
+    contact    TEXT   NOT NULL DEFAULT '',
     created_at TEXT   NOT NULL
 );
 
@@ -84,6 +114,19 @@ CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at);
 # IF NOT EXISTS; SQLite does not, so its backend inspects the table instead.
 POSTGRES_MIGRATIONS = (
     "ALTER TABLE chats ADD COLUMN IF NOT EXISTS paused INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS author TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS contact TEXT NOT NULL DEFAULT ''",
+)
+
+# SQLite equivalent of POSTGRES_MIGRATIONS: (table, column, DDL fragment).
+SQLITE_MIGRATIONS = (
+    ("chats", "paused", "paused INTEGER NOT NULL DEFAULT 0"),
+    ("leads", "source", "source TEXT NOT NULL DEFAULT ''"),
+    ("leads", "url", "url TEXT NOT NULL DEFAULT ''"),
+    ("leads", "author", "author TEXT NOT NULL DEFAULT ''"),
+    ("leads", "contact", "contact TEXT NOT NULL DEFAULT ''"),
 )
 
 # libpq-only query parameters that asyncpg forwards to the server as settings and
@@ -103,6 +146,21 @@ class Chat:
     chat_id: int
     title: str
     paused: bool = False
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """A stored external source (feed, public channel, userbot target)."""
+
+    source_id: str
+    kind: str
+    target: str
+    title: str = ""
+    paused: bool = False
+
+    @property
+    def display(self) -> str:
+        return self.title or self.target
 
 
 def _now() -> str:
@@ -199,7 +257,28 @@ class Database(ABC):
         is_lead: bool,
         summary: str = "",
         intent: str = "",
+        source: str = "",
+        url: str = "",
+        author: str = "",
+        contact: str = "",
     ) -> bool: ...
+
+    @abstractmethod
+    async def add_source(
+        self, kind: str, target: str, title: str = ""
+    ) -> bool: ...
+
+    @abstractmethod
+    async def remove_source(self, source_id: str) -> bool: ...
+
+    @abstractmethod
+    async def list_sources(self, include_paused: bool = True) -> list[SourceRow]: ...
+
+    @abstractmethod
+    async def get_source(self, source_id: str) -> SourceRow | None: ...
+
+    @abstractmethod
+    async def set_source_paused(self, source_id: str, paused: bool) -> bool: ...
 
     @abstractmethod
     async def stats(self) -> dict[str, int]: ...
@@ -208,12 +287,31 @@ class Database(ABC):
         """Insert default keywords, but only when the table is empty."""
         if await self.list_keywords():
             return 0
+        added = await self.add_keywords(keywords)
+        if added:
+            logger.info("Seeded %d default keyword(s)", added)
+        return added
+
+    async def add_keywords(self, keywords: tuple[str, ...] | list[str]) -> int:
+        """Insert several keywords, ignoring the ones already present."""
         added = 0
         for keyword in keywords:
             if await self.add_keyword(keyword):
                 added += 1
+        return added
+
+    async def seed_sources(
+        self, sources: tuple[tuple[str, str, str], ...]
+    ) -> int:
+        """Insert default sources, but only when the table is empty."""
+        if await self.list_sources():
+            return 0
+        added = 0
+        for kind, target, title in sources:
+            if await self.add_source(kind, target, title):
+                added += 1
         if added:
-            logger.info("Seeded %d default keyword(s)", added)
+            logger.info("Seeded %d default source(s)", added)
         return added
 
 
@@ -248,14 +346,19 @@ class SQLiteDatabase(Database):
         return self._conn
 
     async def migrate(self) -> None:
-        cur = await self.conn.execute("PRAGMA table_info(chats)")
-        columns = {r["name"] for r in await cur.fetchall()}
-        if "paused" not in columns:
-            await self.conn.execute(
-                "ALTER TABLE chats ADD COLUMN paused INTEGER NOT NULL DEFAULT 0"
-            )
+        """Add columns introduced after the first release (idempotent).
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``, so each expected column is
+        checked against ``PRAGMA table_info`` before being added.
+        """
+        for table, column, ddl in SQLITE_MIGRATIONS:
+            cur = await self.conn.execute(f"PRAGMA table_info({table})")
+            columns = {row["name"] for row in await cur.fetchall()}
+            if column in columns:
+                continue
+            await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
             await self.conn.commit()
-            logger.info("Migrated chats table: added paused column")
+            logger.info("Migrated %s table: added %s column", table, column)
 
     async def add_chat(self, chat_id: int, title: str = "") -> bool:
         cur = await self.conn.execute(
@@ -344,14 +447,96 @@ class SQLiteDatabase(Database):
         is_lead: bool,
         summary: str = "",
         intent: str = "",
+        source: str = "",
+        url: str = "",
+        author: str = "",
+        contact: str = "",
     ) -> bool:
         cur = await self.conn.execute(
             """
             INSERT OR IGNORE INTO leads
-                (msg_hash, chat_id, message_id, is_lead, summary, intent, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (msg_hash, chat_id, message_id, is_lead, summary, intent,
+                 source, url, author, contact, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (msg_hash, chat_id, message_id, int(is_lead), summary, intent, _now()),
+            (
+                msg_hash,
+                chat_id,
+                message_id,
+                int(is_lead),
+                summary,
+                intent,
+                source,
+                url,
+                author,
+                contact,
+                _now(),
+            ),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def add_source(self, kind: str, target: str, title: str = "") -> bool:
+        kind = (kind or "").strip().lower()
+        target = (target or "").strip()
+        if not kind or not target:
+            return False
+        source_id = f"{kind}:{target}"
+        cur = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO sources
+                (source_id, kind, target, title, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (source_id, kind, target, title, _now()),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def remove_source(self, source_id: str) -> bool:
+        cur = await self.conn.execute(
+            "DELETE FROM sources WHERE source_id = ?", (source_id.strip(),)
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def list_sources(self, include_paused: bool = True) -> list[SourceRow]:
+        sql = "SELECT source_id, kind, target, title, paused FROM sources"
+        if not include_paused:
+            sql += " WHERE paused = 0"
+        sql += " ORDER BY added_at ASC"
+        cur = await self.conn.execute(sql)
+        return [
+            SourceRow(
+                source_id=r["source_id"],
+                kind=r["kind"],
+                target=r["target"],
+                title=r["title"],
+                paused=bool(r["paused"]),
+            )
+            for r in await cur.fetchall()
+        ]
+
+    async def get_source(self, source_id: str) -> SourceRow | None:
+        cur = await self.conn.execute(
+            "SELECT source_id, kind, target, title, paused FROM sources WHERE source_id = ?",
+            (source_id.strip(),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return SourceRow(
+            source_id=row["source_id"],
+            kind=row["kind"],
+            target=row["target"],
+            title=row["title"],
+            paused=bool(row["paused"]),
+        )
+
+    async def set_source_paused(self, source_id: str, paused: bool) -> bool:
+        cur = await self.conn.execute(
+            "UPDATE sources SET paused = ? WHERE source_id = ?",
+            (int(paused), source_id.strip()),
         )
         await self.conn.commit()
         return cur.rowcount > 0
@@ -360,15 +545,18 @@ class SQLiteDatabase(Database):
         cur = await self.conn.execute(
             """
             SELECT
-                (SELECT COUNT(*) FROM chats)                   AS chats,
-                (SELECT COUNT(*) FROM keywords)                AS keywords,
-                (SELECT COUNT(*) FROM leads)                   AS analysed,
-                (SELECT COUNT(*) FROM leads WHERE is_lead = 1) AS leads
+                (SELECT COUNT(*) FROM chats)                          AS chats,
+                (SELECT COUNT(*) FROM sources)                        AS sources,
+                (SELECT COUNT(*) FROM keywords)                       AS keywords,
+                (SELECT COUNT(*) FROM leads)                          AS analysed,
+                (SELECT COUNT(*) FROM leads WHERE is_lead = 1)        AS leads
             """
         )
         row = await cur.fetchone()
         return (
-            dict(row) if row else {"chats": 0, "keywords": 0, "analysed": 0, "leads": 0}
+            dict(row)
+            if row
+            else {"chats": 0, "sources": 0, "keywords": 0, "analysed": 0, "leads": 0}
         )
 
 
@@ -521,13 +709,18 @@ class PostgresDatabase(Database):
         is_lead: bool,
         summary: str = "",
         intent: str = "",
+        source: str = "",
+        url: str = "",
+        author: str = "",
+        contact: str = "",
     ) -> bool:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO leads
-                    (msg_hash, chat_id, message_id, is_lead, summary, intent, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    (msg_hash, chat_id, message_id, is_lead, summary, intent,
+                     source, url, author, contact, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (msg_hash) DO NOTHING
                 RETURNING msg_hash
                 """,
@@ -537,7 +730,93 @@ class PostgresDatabase(Database):
                 int(is_lead),
                 summary,
                 intent,
+                source,
+                url,
+                author,
+                contact,
                 _now(),
+            )
+        return row is not None
+
+    async def add_source(self, kind: str, target: str, title: str = "") -> bool:
+        kind = (kind or "").strip().lower()
+        target = (target or "").strip()
+        if not kind or not target:
+            return False
+        source_id = f"{kind}:{target}"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO sources (source_id, kind, target, title, added_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (source_id) DO NOTHING
+                RETURNING source_id
+                """,
+                source_id,
+                kind,
+                target,
+                title,
+                _now(),
+            )
+            if row is None and title:
+                await conn.execute(
+                    "UPDATE sources SET title = $1 WHERE source_id = $2 AND title = ''",
+                    title,
+                    source_id,
+                )
+        return row is not None
+
+    async def remove_source(self, source_id: str) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "DELETE FROM sources WHERE source_id = $1 RETURNING source_id",
+                source_id.strip(),
+            )
+        return row is not None
+
+    async def list_sources(self, include_paused: bool = True) -> list[SourceRow]:
+        sql = "SELECT source_id, kind, target, title, paused FROM sources"
+        if not include_paused:
+            sql += " WHERE paused = 0"
+        sql += " ORDER BY added_at ASC"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql)
+        return [
+            SourceRow(
+                source_id=r["source_id"],
+                kind=r["kind"],
+                target=r["target"],
+                title=r["title"],
+                paused=bool(r["paused"]),
+            )
+            for r in rows
+        ]
+
+    async def get_source(self, source_id: str) -> SourceRow | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT source_id, kind, target, title, paused
+                FROM sources WHERE source_id = $1
+                """,
+                source_id.strip(),
+            )
+        if row is None:
+            return None
+        return SourceRow(
+            source_id=row["source_id"],
+            kind=row["kind"],
+            target=row["target"],
+            title=row["title"],
+            paused=bool(row["paused"]),
+        )
+
+    async def set_source_paused(self, source_id: str, paused: bool) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE sources SET paused = $1 WHERE source_id = $2 RETURNING source_id",
+                int(paused),
+                source_id.strip(),
             )
         return row is not None
 
@@ -547,13 +826,16 @@ class PostgresDatabase(Database):
                 """
                 SELECT
                     (SELECT COUNT(*) FROM chats)                   AS chats,
+                    (SELECT COUNT(*) FROM sources)                 AS sources,
                     (SELECT COUNT(*) FROM keywords)                AS keywords,
                     (SELECT COUNT(*) FROM leads)                   AS analysed,
                     (SELECT COUNT(*) FROM leads WHERE is_lead = 1) AS leads
                 """
             )
         return (
-            dict(row) if row else {"chats": 0, "keywords": 0, "analysed": 0, "leads": 0}
+            dict(row)
+            if row
+            else {"chats": 0, "sources": 0, "keywords": 0, "analysed": 0, "leads": 0}
         )
 
 

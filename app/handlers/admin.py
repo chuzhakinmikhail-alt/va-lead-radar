@@ -17,6 +17,7 @@ from aiogram.types import BufferedInputFile, Message
 
 from ..config import Config
 from ..db import Database
+from ..sources import SOURCE_KINDS, is_valid_channel, kind_help, normalise_channel
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -46,20 +47,29 @@ def _parse_chat_id(raw: str) -> int | None:
 
 HELP_TEXT = (
     "🤖 <b>VA Lead Radar</b>\n\n"
-    "Мониторю чаты по ключевым словам и присылаю карточки лидов.\n\n"
-    "<b>Команды</b>\n"
+    "Ищу заказы сам — на биржах и в публичных чатах/каналах — и присылаю "
+    "карточки лидов с контактами.\n\n"
+    "<b>Внешние источники (основной режим)</b>\n"
+    "/sources — список источников и их состояние\n"
+    "/addsource &lt;тип&gt; &lt;адрес&gt; — добавить источник\n"
+    "/removesource &lt;тип&gt; &lt;адрес&gt; — удалить источник\n"
+    "/pause_source, /resume_source — пауза источника\n"
+    "/poll — опросить источники прямо сейчас\n\n"
+    "<b>Чаты, куда меня добавили</b>\n"
     "/addchat &lt;chat_id&gt; — добавить чат в мониторинг\n"
+    "/pause, /resume — пауза/снятие для текущего чата\n"
+    "/remove chat &lt;chat_id&gt; — удалить чат\n\n"
+    "<b>Ключевые слова</b>\n"
     "/addkeyword &lt;слово&gt; — добавить ключевое слово\n"
-    "/remove chat &lt;chat_id&gt; — удалить чат\n"
-    "/remove keyword &lt;слово&gt; — удалить ключевое слово\n"
-    "/pause — поставить текущий чат на паузу\n"
-    "/resume — снять с паузы\n"
-    "/list — показать чаты и ключевые слова\n"
+    "/remove keyword &lt;слово&gt; — удалить ключевое слово\n\n"
+    "<b>Прочее</b>\n"
+    "/list — показать чаты, источники и слова\n"
     "/settings — текущие настройки\n"
     "/export — выгрузить настройки файлом\n"
     "/stats — статистика\n\n"
-    "ℹ️ Бот видит сообщения только в тех чатах, где он участник, и получает "
-    "все апдейты. Для каналов добавьте бота администратором."
+    "ℹ️ На биржах и в публичных каналах бот ищет сам, добавлять его никуда не "
+    "нужно. Обычные чаты (не каналы) Bot API читать не умеет — для них нужен "
+    "userbot, см. README."
 )
 
 
@@ -136,8 +146,18 @@ async def cmd_list(message: Message, config: Config, db: Database) -> None:
 
     chats = await db.list_chats()
     keywords = await db.list_keywords()
+    sources = await db.list_sources()
 
     lines = ["📋 <b>Мониторинг</b>", "", _auto_mode_line(config), ""]
+    lines.append("<b>Внешние источники:</b>")
+    if sources:
+        for row in sources:
+            mark = "⏸" if row.paused else "•"
+            lines.append(f"{mark} <code>{html.escape(row.source_id)}</code>")
+    else:
+        lines.append("• <i>пусто</i>")
+
+    lines.append("")
     lines.append("<b>Чаты:</b>")
     if chats:
         for chat in chats:
@@ -280,6 +300,7 @@ async def cmd_export(message: Message, config: Config, db: Database) -> None:
 async def _settings_payload(config: Config, db: Database) -> dict:
     """Collect effective settings. Secrets are reported as set/not set only."""
     chats = await db.list_chats()
+    sources = await db.list_sources()
     stats = await db.stats()
     return {
         "auto_mode": config.monitor_all_chats,
@@ -290,6 +311,26 @@ async def _settings_payload(config: Config, db: Database) -> dict:
         "chats": [
             {"chat_id": c.chat_id, "title": c.title, "paused": c.paused} for c in chats
         ],
+        "sources_total": len(sources),
+        "sources_active": sum(1 for s in sources if not s.paused),
+        "sources": [
+            {
+                "source_id": s.source_id,
+                "kind": s.kind,
+                "target": s.target,
+                "title": s.title,
+                "paused": s.paused,
+            }
+            for s in sources
+        ],
+        "polling": {
+            "enabled": config.poll_sources,
+            "interval_seconds": config.poll_interval,
+            "seed_defaults": config.seed_default_sources,
+        },
+        "userbot_configured": bool(
+            config.telegram_api_id and config.telegram_api_hash and config.telegram_session
+        ),
         "llm": {
             "provider": config.llm_provider,
             "model": config.model,
@@ -310,6 +351,9 @@ async def _settings_json(config: Config, db: Database) -> str:
     payload["exported_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     payload["env"] = {
         "MONITOR_ALL_CHATS": str(config.monitor_all_chats).lower(),
+        "POLL_SOURCES": str(config.poll_sources).lower(),
+        "POLL_INTERVAL": str(config.poll_interval),
+        "SEED_DEFAULT_SOURCES": str(config.seed_default_sources).lower(),
         "LLM_PROVIDER": config.llm_provider,
         "LLM_MODEL": config.model,
         "LLM_FALLBACK_MODELS": ",".join(config.llm_fallback_models),
@@ -345,6 +389,25 @@ async def _settings_text(config: Config, db: Database) -> str:
         f"<b>Админ задан:</b> {'да' if data['admin_configured'] else 'нет'}",
         f"<b>Лимит текста:</b> {data['max_analyze_chars']} символов",
         "",
+        f"<b>Опрос источников:</b> "
+        f"{'включён' if data['polling']['enabled'] else 'выключен'}, "
+        f"каждые {data['polling']['interval_seconds']} с",
+        f"<b>Userbot:</b> "
+        f"{'настроен' if data['userbot_configured'] else 'не настроен'}",
+        "",
+        f"<b>Источники ({data['sources_active']} активных, "
+        f"{data['sources_total'] - data['sources_active']} на паузе):</b>",
+    ]
+
+    if data["sources"]:
+        for src in data["sources"]:
+            mark = "⏸" if src["paused"] else "•"
+            lines.append(f"{mark} <code>{html.escape(src['source_id'])}</code>")
+    else:
+        lines.append("• <i>пусто</i>")
+
+    lines += [
+        "",
         f"<b>Чаты ({data['chats_active']} активных, "
         f"{data['chats_paused']} на паузе):</b>",
     ]
@@ -373,6 +436,185 @@ async def _settings_text(config: Config, db: Database) -> str:
     return "\n".join(lines)
 
 
+def _source_target(kind: str, raw: str) -> str:
+    """Normalise a source target so ``@name`` and ``t.me/name`` match.
+
+    Without this, the same channel added twice in different spellings would be
+    polled twice and each post would arrive as two separate leads.
+    """
+    value = raw.strip()
+    if kind == "tg_public":
+        return normalise_channel(value)
+    return value
+
+
+def _source_id(kind: str, raw: str) -> str:
+    return f"{kind}:{_source_target(kind, raw)}"
+
+
+@router.message(Command("sources"))
+async def cmd_sources(message: Message, config: Config, db: Database) -> None:
+    if not await _guard(message, config):
+        return
+
+    sources = await db.list_sources()
+    lines = ["🌐 <b>Внешние источники</b>", ""]
+
+    if sources:
+        for row in sources:
+            mark = "⏸" if row.paused else "•"
+            lines.append(
+                f"{mark} <code>{row.source_id}</code>\n"
+                f"    {html.escape(row.display)}"
+            )
+    else:
+        lines.append("• <i>пусто</i>")
+
+    lines += [
+        "",
+        f"<b>Опрос:</b> {'включён' if config.poll_sources else 'выключен'}, "
+        f"каждые {config.poll_interval} с",
+        "",
+        "<b>Как добавить</b>",
+        kind_help(),
+        "",
+        "Пример: <code>/addsource tg_public freelance_orders</code>",
+    ]
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("addsource"))
+async def cmd_addsource(
+    message: Message, command: CommandObject, config: Config, db: Database
+) -> None:
+    if not await _guard(message, config):
+        return
+
+    args = (command.args or "").strip()
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Использование: <code>/addsource &lt;тип&gt; &lt;адрес&gt;</code>\n\n"
+            + kind_help()
+            + "\n\nПример: <code>/addsource rss https://www.freelancer.com/rss.xml</code>"
+        )
+        return
+
+    kind, raw_target = parts[0].strip().lower(), parts[1].strip()
+    if kind not in SOURCE_KINDS:
+        await message.answer(
+            f"⚠️ Неизвестный тип <code>{html.escape(kind)}</code>.\n\n" + kind_help()
+        )
+        return
+
+    if kind == "userbot" and not config.telegram_session:
+        await message.answer(
+            "⚠️ Тип <code>userbot</code> требует ключей Telegram-аккаунта "
+            "(<code>TELEGRAM_API_ID</code>, <code>TELEGRAM_API_HASH</code>, "
+            "<code>TELEGRAM_SESSION</code>). Пока их нет, источник сохранится, "
+            "но опрашиваться не будет. Инструкция — в README."
+        )
+
+    target = _source_target(kind, raw_target)
+    if kind == "tg_public" and not is_valid_channel(target):
+        await message.answer(
+            f"⚠️ <code>{html.escape(raw_target)}</code> не похоже на публичный канал. "
+            "Нужен @username канала (не приватная ссылка-приглашение)."
+        )
+        return
+
+    if await db.add_source(kind, target):
+        await message.answer(
+            f"✅ Источник добавлен: <code>{html.escape(kind + ':' + target)}</code>\n"
+            "Опрошу его в ближайшем цикле или сразу по /poll."
+        )
+        logger.info("Source added: %s:%s", kind, target)
+    else:
+        await message.answer(
+            f"ℹ️ Источник уже есть: <code>{html.escape(kind + ':' + target)}</code>"
+        )
+
+
+@router.message(Command("removesource"))
+async def cmd_removesource(
+    message: Message, command: CommandObject, config: Config, db: Database
+) -> None:
+    if not await _guard(message, config):
+        return
+
+    args = (command.args or "").strip()
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Использование: <code>/removesource &lt;тип&gt; &lt;адрес&gt;</code>\n"
+            "Например: <code>/removesource tg_public freelance_orders</code>"
+        )
+        return
+
+    kind, raw_target = parts[0].strip().lower(), parts[1].strip()
+    source_id = _source_id(kind, raw_target)
+    if await db.remove_source(source_id):
+        await message.answer(f"🗑 Источник удалён: <code>{html.escape(source_id)}</code>")
+        logger.info("Source removed: %s", source_id)
+    else:
+        await message.answer(f"⚠️ Источник не найден: <code>{html.escape(source_id)}</code>")
+
+
+@router.message(Command("pause_source", "resume_source"))
+async def cmd_pause_source(
+    message: Message, command: CommandObject, config: Config, db: Database
+) -> None:
+    if not await _guard(message, config):
+        return
+
+    paused = command.command.lower() == "pause_source"
+    verb = "⏸" if paused else "▶️"
+    action = "на паузе" if paused else "снова опрашивается"
+
+    args = (command.args or "").strip()
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            f"Использование: <code>/{command.command} &lt;тип&gt; &lt;адрес&gt;</code>\n"
+            f"Например: <code>/{command.command} rss https://www.freelancer.com/rss.xml</code>"
+        )
+        return
+
+    source_id = _source_id(parts[0].strip().lower(), parts[1].strip())
+    if await db.set_source_paused(source_id, paused):
+        await message.answer(f"{verb} Источник <code>{html.escape(source_id)}</code> {action}.")
+        logger.info("Source %s paused=%s", source_id, paused)
+    else:
+        await message.answer(f"⚠️ Источник не найден: <code>{html.escape(source_id)}</code>")
+
+
+@router.message(Command("poll"))
+async def cmd_poll(message: Message, config: Config, poller) -> None:
+    if not await _guard(message, config):
+        return
+
+    if poller is None:
+        await message.answer("⚠️ Опрос источников недоступен в этом режиме.")
+        return
+
+    await message.answer("🔄 Опрошу источники, это может занять до минуты…")
+    try:
+        stats = await poller.run_once()
+    except Exception as exc:  # noqa: BLE001 - report instead of crashing the handler
+        logger.exception("Manual poll failed: %s", exc)
+        await message.answer(f"⚠️ Опрос не удался: {html.escape(str(exc))}")
+        return
+
+    await message.answer(
+        "✅ <b>Опрос завершён</b>\n"
+        f"Источников: {stats['sources']}\n"
+        f"Объявлений: {stats['items']}\n"
+        f"Совпало по словам: {stats['matched']}\n"
+        f"Лидов: {stats['leads']}\n"
+        f"Отправлено карточек: {stats['sent']}"
+    )
+
+
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, config: Config, db: Database) -> None:
     if not await _guard(message, config):
@@ -381,6 +623,7 @@ async def cmd_stats(message: Message, config: Config, db: Database) -> None:
     await message.answer(
         "📊 <b>Статистика</b>\n"
         f"Чатов: {stats['chats']}\n"
+        f"Источников: {stats['sources']}\n"
         f"Ключевых слов: {stats['keywords']}\n"
         f"Проанализировано сообщений: {stats['analysed']}\n"
         f"Найдено лидов: {stats['leads']}"

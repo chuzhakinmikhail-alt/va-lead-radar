@@ -20,6 +20,32 @@ DEFAULT_KEYWORDS: tuple[str, ...] = (
     "закажу дизайн",
 )
 
+# Extra keywords seeded for external sources. Live boards rarely repeat the
+# exact chat phrasings above, so these broader signals widen the net. Precision
+# comes from the LLM stage, which drops ads and chatter, so a broad keyword here
+# costs one classification call rather than a false lead.
+DEFAULT_SOURCE_KEYWORDS: tuple[str, ...] = (
+    "нужен разработчик",
+    "ищу специалиста",
+    "нужен специалист",
+    "ищу исполнителя",
+    "ищу программиста",
+    "нужен программист",
+    "ищу дизайнера",
+    "нужен дизайнер",
+    "ищу верстальщика",
+    "нужен верстальщик",
+    "требуется разработчик",
+    "ищу фрилансера",
+    "нужен фрилансер",
+    "ищу подрядчика",
+    "нужен подрядчик",
+    "ищу человека",
+    "нужна помощь с",
+    "кто может сделать",
+    "разработка на заказ",
+)
+
 # Sensible default model per provider.
 DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-1.5-flash",
@@ -83,6 +109,16 @@ class Config:
     # Auto-monitor every chat the bot is added to, instead of requiring
     # /addchat. Chats are registered on their first message; /pause withdraws one.
     monitor_all_chats: bool = False
+    # Poll external sources (freelance feeds, public Telegram channels) so the
+    # bot finds orders on its own, without being added to any chat.
+    poll_sources: bool = True
+    poll_interval: int = 900
+    seed_default_sources: bool = True
+    # Optional userbot (MTProto) credentials. Only needed to read ordinary
+    # chats or run global search; public channels work without them.
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+    telegram_session: str = ""
     # Postgres DSN (Neon / Render Postgres). Empty keeps the local SQLite file,
     # which is only safe on hosts with a persistent disk.
     database_url: str = ""
@@ -189,6 +225,12 @@ def load_config() -> Config:
         log_level=(_env("LOG_LEVEL", "INFO") or "INFO").upper(),
         max_analyze_chars=max(200, _env_int("MAX_ANALYZE_CHARS", 4000)),
         monitor_all_chats=_env_bool("MONITOR_ALL_CHATS", False),
+        poll_sources=_env_bool("POLL_SOURCES", True),
+        poll_interval=max(60, _env_int("POLL_INTERVAL", 900)),
+        seed_default_sources=_env_bool("SEED_DEFAULT_SOURCES", True),
+        telegram_api_id=_env_int("TELEGRAM_API_ID", 0),
+        telegram_api_hash=_env("TELEGRAM_API_HASH", "") or "",
+        telegram_session=_env("TELEGRAM_SESSION", "") or "",
         database_url=database_url,
         webhook_base_url=base_url,
         webhook_secret=_env("WEBHOOK_SECRET", "") or "",

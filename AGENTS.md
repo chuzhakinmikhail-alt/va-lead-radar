@@ -4,16 +4,18 @@
 
 ## Что это
 
-Telegram-бот: следит за чатами, ищет ключевые слова, через LLM решает, лид это
-или спам, и присылает админу карточку. Python 3.11, aiogram 3.x, SQLite или
-Postgres, Gemini/OpenAI.
+Telegram-бот: сам находит заказы на биржах фриланса (RSS) и в публичных
+Telegram-каналах (`t.me/s/`), плюс следит за чатами, куда его добавили. По
+ключевым словам и через LLM решает, лид это или спам, и присылает админу карточку
+с контактами или ссылкой. Python 3.11, aiogram 3.x, SQLite или Postgres,
+Gemini/OpenAI.
 
 ## Команды
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest                      # 44 теста, 6 скипаются без TEST_DATABASE_URL
+pytest                      # 104 теста, часть скипается без TEST_DATABASE_URL
 python bot.py               # long polling (локально)
 python main.py              # webhook + /health (хостинг)
 ```
@@ -21,12 +23,17 @@ python main.py              # webhook + /health (хостинг)
 ## Структура
 
 - `bot.py` — long polling. `main.py` — webhook + `/health`.
-- `app/runtime.py` — общая сборка (бот, диспетчер, база, анализатор) для обоих
-  входов. Меняя состав роутеров или зависимости, правьте только здесь.
+- `app/runtime.py` — общая сборка (бот, диспетчер, база, анализатор, поллер) для
+  обоих входов. Меняя состав роутеров или зависимости, правьте только здесь.
 - `app/config.py` — `load_config()`, единственное место чтения env.
 - `app/db.py` — `Database` (ABC) + `SQLiteDatabase` + `PostgresDatabase`.
   Новый метод добавляется в ABC и в оба класса.
 - `app/analyzer.py` — LLM, `LeadVerdict(is_lead, summary, intent)`.
+- `app/contacts.py` — извлечение Telegram/email/телефона из текста объявления.
+- `app/poller.py` — фоновый цикл: опрос источников → ключи → LLM → карточка.
+- `app/sources/` — источники. `base.py` (LeadItem, `Source`, HTTP-клиент),
+  `rss.py`, `telegram_public.py`, `telegram_userbot.py`; реестр и фабрика —
+  в `__init__.py` (`create_source`, `SOURCE_KINDS`, `DEFAULT_SOURCES`).
 - `app/handlers/admin.py` — команды. `app/handlers/monitor.py` — новые сообщения.
 
 ## Правила, которые легко нарушить
@@ -74,6 +81,41 @@ python main.py              # webhook + /health (хостинг)
     только несекретные поля; ключи LLM и токен бота в выгрузку не входят.
     Тест `test_settings_json_is_valid_and_secret_free` это проверяет.
 
+11. **Bot API не читает чужие чаты — это ограничение платформы, не баг.**
+    Публичные каналы доступны через веб-превью `https://t.me/s/<username>`
+    (парсим `data-post` и `tgme_widget_message_text`). Обычные группы — только
+    через userbot (MTProto, telethon). Не пытайтесь «починить» это через Bot API.
+
+12. **`tg_public`-источник всегда нормализуется перед сохранением.**
+    `@name`, `name`, `t.me/name`, `t.me/s/name` приводятся к `name`
+    (`normalise_channel`). Иначе один канал добавляется дважды, опрашивается
+    дважды, и каждый пост приходит двумя лидами.
+
+13. **Дедупликация внешних лидов — хэш `source_id:external_id`, не сам id.**
+    Числовые id у разных бирж совпадают. `item_hash()` в `app/poller.py`.
+
+14. **Поллер не должен падать от одного источника.** `Source.fetch()` ловит
+    ошибки и возвращает `[]`; `Poller._loop()` ловит всё и продолжает. Цикл
+    ограничен `CYCLE_TIMEOUT`, чтобы зависшая лента не блокировала опрос.
+
+15. **Ключевые слова для чатов почти не встречаются на биржах.** Живой прогон:
+    4 слова из `DEFAULT_KEYWORDS` дали 0 совпадений из 55 объявлений. Поэтому
+    в `DEFAULT_SOURCE_KEYWORDS` лежит более широкий набор («ищу специалиста»,
+    «нужен дизайнер» и т. п.). Точность обеспечивает LLM-стадия, а не слова.
+
+16. **Карточка должна вести куда-то всегда.** Если контактов в тексте нет,
+    подставляется ссылка на объявление (`url`), иначе — пометка «не указаны».
+    Без этого лид бесполезен.
+
+17. **Заглушка `FakeRuntime` в `tests/test_webhook.py` обязана иметь `poller`.**
+    `main.create_app` обращается к `runtime.poller` в lifespan; без атрибута
+    тест вешается (обращение к отсутствующему полю через `getattr` не спасёт,
+    а реальный поллер ушёл бы в сеть).
+
+18. **Новые источники регистрируются в `SOURCE_KINDS` и `create_source`.**
+    `/addsource` проверяет тип по `SOURCE_KINDS`; незарегистрированный тип
+    вернёт `None` из фабрики и будет молча пропущен поллером.
+
 ## Деплой
 
 Neon (Postgres) + Render (webhook-сервис). Полная инструкция — `DEPLOY.md`,
@@ -89,6 +131,19 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
   проходит целиком; сбой LLM логируется и не роняет процесс.
 - Тесты: 44 passed / 6 skipped без `TEST_DATABASE_URL`; с реальным Postgres —
   50 passed (проверено на Render Postgres 18, SSL).
+
+### Внешние источники (живой прогон)
+
+Проверено 2026-11-15 на реальной сети, без ключей:
+
+- `https://www.freelancer.com/rss.xml` → 20 объявлений, `parse_feed` вытащил
+  заголовок, текст, ссылку и дату.
+- `https://t.me/s/freelance_orders` → 15 постов, `https://t.me/s/freelance_zakazy`
+  → 20 постов. Контакт (`@gotoisland`) извлечён из текста поста.
+- Полный цикл `Poller.run_once()` на трёх источниках: 55 объявлений → 4 совпадения
+  по ключам → 2 лида → 2 карточки. Повторный прогон: `sent=0` (анти-дубли).
+- Не подходят: `upwork.com/ab/feed/jobs/rss` (403), `kwork.ru/rss` (услуги, не
+  заказы), `freelance.habr.com/tasks` (SPA без данных в HTML).
 
 ### Авто-мониторинг (MONITOR_ALL_CHATS)
 

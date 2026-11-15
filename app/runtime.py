@@ -19,10 +19,12 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 
 from .analyzer import LeadAnalyzer
-from .config import Config
+from .config import DEFAULT_SOURCE_KEYWORDS, Config
 from .db import Database, create_database
 from .handlers import admin, monitor
 from .logger import setup_logging
+from .poller import Poller
+from .sources import DEFAULT_SOURCES, create_userbot_session
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,10 @@ BOT_COMMANDS = [
     BotCommand(command="pause", description="Пауза для чата"),
     BotCommand(command="resume", description="Снять паузу"),
     BotCommand(command="list", description="Показать чаты и слова"),
+    BotCommand(command="sources", description="Внешние источники"),
+    BotCommand(command="addsource", description="Добавить источник"),
+    BotCommand(command="removesource", description="Удалить источник"),
+    BotCommand(command="poll", description="Опросить источники сейчас"),
     BotCommand(command="settings", description="Текущие настройки"),
     BotCommand(command="export", description="Выгрузить настройки файлом"),
     BotCommand(command="stats", description="Статистика"),
@@ -47,8 +53,17 @@ class Runtime:
     dispatcher: Dispatcher
     db: Database
     analyzer: LeadAnalyzer
+    poller: Poller | None = None
+    userbot: object | None = None
 
     async def shutdown(self) -> None:
+        if self.poller is not None:
+            await self.poller.stop()
+        if self.userbot is not None:
+            try:
+                await self.userbot.disconnect()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                logger.warning("Userbot disconnect failed: %s", exc)
         await self.analyzer.aclose()
         await self.db.close()
         await self.bot.session.close()
@@ -90,14 +105,36 @@ async def build_runtime(config: Config) -> Runtime:
     seeded = await db.seed_keywords(config.default_keywords)
     if seeded:
         logger.info("Applied %d default keyword(s)", seeded)
+        # The chat phrasings alone rarely appear verbatim on freelance boards,
+        # so the broader source set is added alongside them. Both live in the
+        # same table; the LLM stage keeps the precision.
+        extra = await db.add_keywords(DEFAULT_SOURCE_KEYWORDS)
+        if extra:
+            logger.info("Applied %d source keyword(s)", extra)
+
+    if config.seed_default_sources:
+        seeded_sources = await db.seed_sources(DEFAULT_SOURCES)
+        if seeded_sources:
+            logger.info("Applied %d default source(s)", seeded_sources)
 
     analyzer = LeadAnalyzer(config)
+
+    # The userbot is optional: without credentials every userbot source is
+    # skipped, and public channels plus RSS keep working.
+    userbot = None
+    if config.telegram_api_id and config.telegram_api_hash and config.telegram_session:
+        userbot = await create_userbot_session(
+            config.telegram_api_id, config.telegram_api_hash, config.telegram_session
+        )
 
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dispatcher = Dispatcher(config=config, db=db, analyzer=analyzer)
+    poller = Poller(config, db, analyzer, bot, userbot_session=userbot)
+    dispatcher = Dispatcher(
+        config=config, db=db, analyzer=analyzer, poller=poller
+    )
     dispatcher.include_router(admin.router)
     dispatcher.include_router(monitor.router)
 
@@ -108,7 +145,13 @@ async def build_runtime(config: Config) -> Runtime:
         )
 
     return Runtime(
-        config=config, bot=bot, dispatcher=dispatcher, db=db, analyzer=analyzer
+        config=config,
+        bot=bot,
+        dispatcher=dispatcher,
+        db=db,
+        analyzer=analyzer,
+        poller=poller,
+        userbot=userbot,
     )
 
 
