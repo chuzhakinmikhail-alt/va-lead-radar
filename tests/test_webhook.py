@@ -61,6 +61,7 @@ def make_config(tmp_path) -> Config:
         webhook_base_url="https://va-lead-radar.onrender.com",
         webhook_secret="base64/secret+with=chars",
         webhook_path="/telegram/webhook",
+        monitor_all_chats=True,
     )
 
 
@@ -117,6 +118,7 @@ async def test_health_endpoint_reports_ok(tmp_path):
             assert body["mode"] == "webhook"
             assert body["storage"] == "sqlite"
             assert body["admin_configured"] is True
+            assert body["monitor_all_chats"] is True
             assert body["stats"]["chats"] == 1
             assert body["stats"]["keywords"] == 1
 
