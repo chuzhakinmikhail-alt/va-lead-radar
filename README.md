@@ -1,0 +1,138 @@
+# VA Lead Radar
+
+Telegram-бот, который следит за заданными чатами и каналами, ищет в новых
+сообщениях ключевые слова и через LLM определяет, настоящее ли это обращение за
+услугами или спам. Реальные лиды приходят админу карточками: чат, автор, краткое
+саммари, интент и ссылка на сообщение.
+
+## Возможности
+
+- **Мониторинг чатов и каналов.** `/addchat` добавляет чат в наблюдение.
+- **Ключевые слова.** `/addkeyword` добавляет слово; по умолчанию уже стоят
+  «ищу разработчика», «нужен сайт», «нужен бот», «закажу дизайн».
+- **LLM-фильтр.** Сообщение с ключевым словом уходит в Gemini или OpenAI с
+  промтом, который просит вернуть JSON `{is_lead, summary, intent}`. Модель
+  отсеивает рекламу, спам и болтовню.
+- **Карточки лидов.** Если `is_lead=true`, админ получает карточку со ссылкой на
+  сообщение.
+- **Анти-дубли.** Хэш сообщения (`chat_id:message_id`) хранится как первичный
+  ключ, поэтому один лид не придёт дважды — даже после перезапуска и даже если
+  Telegram доставит апдейт повторно.
+- **Два режима работы.** Long polling для локального запуска, VPS и Docker.
+  Webhook с эндпоинтом `/health` для бесплатных хостингов, где процесс засыпает
+  и диск очищается.
+- **Две СУБД.** SQLite-файл для локальной работы, Postgres (Neon, Render) там,
+  где диск не сохраняется.
+- **Логирование и обработка ошибок.** Лог в файл, сбой LLM или БД не роняет бота.
+
+## Требования
+
+- Python 3.11+
+- Токен бота от [@BotFather](https://t.me/BotFather)
+- Ваш Telegram ID (узнать можно у [@userinfobot](https://t.me/userinfobot))
+- Ключ LLM: [Google AI Studio](https://aistudio.google.com/apikey) (Gemini) или
+  [OpenAI](https://platform.openai.com/api-keys)
+
+## Быстрый старт (локально, long polling)
+
+```bash
+git clone <repo-url> va-lead-radar
+cd va-lead-radar
+
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+cp .env.example .env               # заполните BOT_TOKEN, ADMIN_ID, LLM_API_KEY
+python bot.py
+```
+
+При старте бот пишет в лог, под каким аккаунтом авторизовался, и создаёт файл
+`data/va_lead_radar.db` с четырьмя ключевыми словами по умолчанию.
+
+## Настройка
+
+Всё через `.env` (см. `.env.example`).
+
+| Переменная | Обязательна | Описание |
+|---|---|---|
+| `BOT_TOKEN` | да | Токен бота от @BotFather. |
+| `ADMIN_ID` | для доставки | Ваш числовой Telegram ID. Без него бот работает и пишет лиды в базу, но карточки не отправляет (в лог идёт предупреждение). |
+| `LLM_API_KEY` | да | Ключ Gemini или OpenAI. |
+| `LLM_PROVIDER` | нет | `gemini` (по умолчанию) или `openai`. |
+| `LLM_MODEL` | нет | Модель. По умолчанию `gemini-1.5-flash` или `gpt-4o-mini`. |
+| `DATABASE_URL` | для хостинга | Строка подключения Postgres, вместе с `?sslmode=require`. Пусто — используется SQLite. |
+| `DB_PATH` | нет | Путь к файлу SQLite. По умолчанию `data/va_lead_radar.db`. |
+| `WEBHOOK_BASE_URL` | для хостинга | Публичный `https`-адрес сервиса. Пусто — long polling. |
+| `WEBHOOK_SECRET` | рекомендуется | Секрет, который Telegram присылает в заголовке. Бот хэширует его, чтобы получить допустимый для Telegram токен. |
+| `PORT` | нет | Порт HTTP-сервера. Хостинг подставляет свой, локально 8080. |
+| `LOG_PATH`, `LOG_LEVEL` | нет | Куда и как подробно писать лог. |
+
+## Команды
+
+| Команда | Что делает |
+|---|---|
+| `/start` | Справка. |
+| `/addchat <chat_id>` | Добавить чат или канал в мониторинг. |
+| `/addkeyword <слово>` | Добавить ключевое слово. |
+| `/remove chat <chat_id>` | Убрать чат. |
+| `/remove keyword <слово>` | Убрать ключевое слово. |
+| `/list` | Показать чаты и ключевые слова. |
+| `/stats` | Сколько чатов, слов и найденных лидов. |
+
+Команды доступны только админу (`ADMIN_ID`).
+
+### Как узнать `chat_id`
+
+Добавьте бота в чат, отправьте туда сообщение и откройте
+`https://api.telegram.org/bot<TOKEN>/getUpdates` — в ответе будет `chat.id`
+(у групп он отрицательный, например `-1001234567890`). Для каналов добавьте бота
+администратором и используйте `@username` канала или его ID.
+
+> **Важно.** У бота должен быть **отключён privacy mode**, иначе Telegram не
+> отдаёт боту обычные сообщения из групп и мониторинг не работает. Отключить:
+> @BotFather → `/mybots` → ваш бот → *Bot Settings* → *Group Privacy* → *Turn off*.
+> После этого удалите и заново добавьте бота в чат.
+
+## Запуск в Docker
+
+```bash
+docker build -t va-lead-radar .
+docker run --rm --env-file .env -v "$PWD/data:/app/data" va-lead-radar
+```
+
+## Тесты
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Тесты не ходят в сеть: ответы LLM и Telegram подменены заглушками. Хранилище
+проверяется на SQLite, а Postgres-ветка подключается, если задан
+`TEST_DATABASE_URL`.
+
+## Развёртывание
+
+Пошаговая инструкция для Neon + Render — в [DEPLOY.md](DEPLOY.md).
+
+## Структура проекта
+
+```
+va-lead-radar/
+├── bot.py                      # long polling (локально, VPS, Docker)
+├── main.py                     # webhook + /health (бесплатные хостинги)
+├── app/
+│   ├── config.py               # чтение и проверка .env
+│   ├── db.py                   # SQLite и Postgres, анти-дубли
+│   ├── analyzer.py             # запрос к LLM и разбор JSON
+│   ├── logger.py               # логирование в файл
+│   ├── runtime.py              # сборка бота, диспетчера, базы, анализатора
+│   └── handlers/
+│       ├── admin.py            # /addchat, /addkeyword, /remove, /list, /stats
+│       └── monitor.py          # обработка новых сообщений
+├── tests/
+├── render.yaml                 # Blueprint для Render
+├── Dockerfile
+└── .env.example
+```

@@ -1,0 +1,39 @@
+# Render Blueprint — one-click deploy of VA Lead Radar.
+#
+# Free Render accounts can run a WEB service but not a background worker, and the
+# free filesystem is wiped on every deploy. So the bot runs in webhook mode
+# (main.py) and keeps its data in an external Postgres (see DATABASE_URL below).
+#
+# WEBHOOK_BASE_URL is NOT set here on purpose: Render injects RENDER_EXTERNAL_URL
+# with the public service URL, and config.py falls back to it automatically.
+services:
+  - type: web
+    name: va-lead-radar
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    # Rebuild automatically on every push to the linked branch.
+    autoDeployTrigger: commit
+    envVars:
+      # Filled in the Render dashboard when prompted (sync: false = not stored here).
+      - key: BOT_TOKEN
+        sync: false
+      # Telegram numeric user id of the admin who receives lead cards.
+      - key: ADMIN_ID
+        sync: false
+      # LLM key: Gemini (default) or OpenAI, depending on LLM_PROVIDER.
+      - key: LLM_API_KEY
+        sync: false
+      # Paste the Neon (or Render Postgres) connection string, with ?sslmode=require
+      - key: DATABASE_URL
+        sync: false
+      # Shared secret so only Telegram can POST updates; Render generates it.
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: LLM_PROVIDER
+        value: gemini
+      # Render's disk is ephemeral, so keep logs out of the project directory.
+      - key: LOG_PATH
+        value: /tmp/bot.log

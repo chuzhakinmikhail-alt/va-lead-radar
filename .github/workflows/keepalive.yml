@@ -1,0 +1,45 @@
+# Optional keep-alive ping for the deployed bot's /health endpoint.
+#
+# Read this before enabling the schedule below.
+#
+# On a PRIVATE repository, scheduled jobs consume your GitHub Actions minutes
+# (2,000/month on GitHub Free) and every job is rounded up to a full minute.
+# A ping every 10 minutes is ~4,320 runs/month - more than twice the free quota -
+# so it would drain the allowance and break your other workflows. A schedule slow
+# enough to fit the quota (> ~21 min) cannot keep Render awake anyway, because
+# Render's free tier sleeps after 15 idle minutes.
+#
+# => On a private repo use a free external monitor instead: cron-job.org or
+#    UptimeRobot (5-minute checks, no cost). See DEPLOY.md, step 6.
+# => Scheduled runners are unlimited for PUBLIC repositories, so if this repo is
+#    public you can safely uncomment the schedule.
+#
+# Kept for manual runs and for public repos.
+name: keepalive
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "*/10 * * * *"
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          url="${{ vars.BOT_HEALTH_URL }}"
+          if [ -z "$url" ]; then
+            echo "BOT_HEALTH_URL variable is not set; skipping."
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 30 "$url")
+          echo "HTTP $code"
+          cat /tmp/health.json || true
+          # A cold free instance may need a retry on the very first request.
+          if [ "$code" != "200" ]; then
+            sleep 20
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 30 "$url")
+            echo "retry HTTP $code"
+          fi
+          test "$code" = "200"
