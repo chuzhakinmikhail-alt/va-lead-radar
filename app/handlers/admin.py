@@ -337,6 +337,7 @@ async def _settings_payload(config: Config, db: Database) -> dict:
         "polling": {
             "enabled": config.poll_sources,
             "interval_seconds": config.poll_interval,
+            "max_item_age_days": config.max_item_age_days,
             "seed_defaults": config.seed_default_sources,
         },
         "userbot_configured": bool(
@@ -364,6 +365,7 @@ async def _settings_json(config: Config, db: Database) -> str:
         "MONITOR_ALL_CHATS": str(config.monitor_all_chats).lower(),
         "POLL_SOURCES": str(config.poll_sources).lower(),
         "POLL_INTERVAL": str(config.poll_interval),
+        "MAX_ITEM_AGE_DAYS": str(config.max_item_age_days),
         "SEED_DEFAULT_SOURCES": str(config.seed_default_sources).lower(),
         "LLM_PROVIDER": config.llm_provider,
         "LLM_MODEL": config.model,
@@ -403,6 +405,9 @@ async def _settings_text(config: Config, db: Database) -> str:
         f"<b>Опрос источников:</b> "
         f"{'включён' if data['polling']['enabled'] else 'выключен'}, "
         f"каждые {data['polling']['interval_seconds']} с",
+        f"<b>Максимальный возраст объявления:</b> "
+        f"{data['polling']['max_item_age_days']} дн. "
+        f"(0 — без ограничения)",
         f"<b>Userbot:</b> "
         f"{'настроен' if data['userbot_configured'] else 'не настроен'}",
         "",

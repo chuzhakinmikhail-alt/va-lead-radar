@@ -7,7 +7,7 @@ what ``/sources`` and the seeding logic read.
 
 from __future__ import annotations
 
-from .base import LeadItem, Source, build_client, make_source_id
+from .base import LeadItem, Source, build_client, make_source_id, parse_published
 from .rss import RssSource, parse_feed, strip_html
 from .telegram_public import (
     TelegramPublicSource,
@@ -26,6 +26,7 @@ __all__ = [
     "Source",
     "build_client",
     "make_source_id",
+    "parse_published",
     "RssSource",
     "parse_feed",
     "strip_html",

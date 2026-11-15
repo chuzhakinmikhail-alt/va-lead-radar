@@ -199,6 +199,71 @@ def test_card_renders_source_contacts_and_link():
     assert "нужен бот" in card
 
 
+def test_parse_published_handles_both_formats():
+    from app.sources import parse_published
+
+    iso = parse_published("2026-11-01T22:31:45+00:00")
+    rfc = parse_published("Sun, 15 Nov 2026 14:01:28 -0500")
+    assert iso is not None and iso.year == 2026
+    assert rfc is not None and rfc.year == 2026
+    # Naive stamps are read as UTC rather than dropped.
+    naive = parse_published("2026-11-01T22:31:45")
+    assert naive is not None and naive.tzinfo is not None
+    assert parse_published("") is None
+    assert parse_published("не дата") is None
+
+
+def test_item_freshness_rejects_old_postings():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 11, 15, tzinfo=timezone.utc)
+    stale = make_item(published="2023-06-05T07:16:29+00:00")
+    fresh = make_item(published="2026-11-01T22:31:45+00:00")
+    assert not stale.is_fresh(30, now)
+    assert fresh.is_fresh(30, now)
+    # 0 disables the check, so a stale feed stays readable when asked for.
+    assert stale.is_fresh(0, now)
+    # An unparseable date must not silence a source.
+    assert make_item(published="").is_fresh(30, now)
+    assert make_item(published="мусор").is_fresh(30, now)
+
+
+@pytest.mark.asyncio
+async def test_stale_item_is_not_delivered(tmp_path):
+    """A dead feed serves its last post forever; it must not become a lead."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_keyword("ищу разработчика")
+        analyzer, bot = FakeAnalyzer(), FakeBot()
+        poller = _poller(db, analyzer, bot)
+
+        result = await poller._process(
+            make_item(published="2023-06-05T07:16:29+00:00")
+        )
+        assert result == {"matched": 0, "leads": 0, "sent": 0}
+        assert analyzer.seen == []
+        assert bot.sent == []
+
+
+@pytest.mark.asyncio
+async def test_stale_item_is_skipped_in_the_backlog_scan(tmp_path, monkeypatch):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        analyzer, bot = FakeAnalyzer(), FakeBot()
+        poller = _poller(db, analyzer, bot)
+        _patch_source(
+            monkeypatch,
+            [
+                make_item("orders/old", text="Нужен сайт", published="2023-01-01T00:00:00+00:00"),
+                make_item("orders/new", text="Нужен сайт", published="2026-11-10T00:00:00+00:00"),
+            ],
+        )
+
+        stats = await poller.scan_backlog("сайт")
+        assert stats["items"] == 2
+        assert stats["matched"] == 1
+        assert stats["sent"] == 1
+
+
 def test_card_escapes_html_in_source_text():
     item = make_item(text="Нужен бот <script>alert(1)</script>")
     verdict = LeadVerdict(is_lead=True, summary="s", intent="i")

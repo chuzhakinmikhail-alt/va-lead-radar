@@ -113,6 +113,10 @@ class Config:
     # bot finds orders on its own, without being added to any chat.
     poll_sources: bool = True
     poll_interval: int = 900
+    # Drop postings older than this. A source whose feed has stopped still
+    # serves its last post forever, and that stale order would otherwise be
+    # reported as a fresh lead on the first poll. 0 disables the check.
+    max_item_age_days: int = 30
     seed_default_sources: bool = True
     # Optional userbot (MTProto) credentials. Only needed to read ordinary
     # chats or run global search; public channels work without them.
@@ -227,6 +231,7 @@ def load_config() -> Config:
         monitor_all_chats=_env_bool("MONITOR_ALL_CHATS", False),
         poll_sources=_env_bool("POLL_SOURCES", True),
         poll_interval=max(60, _env_int("POLL_INTERVAL", 900)),
+        max_item_age_days=max(0, _env_int("MAX_ITEM_AGE_DAYS", 30)),
         seed_default_sources=_env_bool("SEED_DEFAULT_SOURCES", True),
         telegram_api_id=_env_int("TELEGRAM_API_ID", 0),
         telegram_api_hash=_env("TELEGRAM_API_HASH", "") or "",

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -28,6 +30,28 @@ USER_AGENT = (
 FETCH_TIMEOUT = 25.0
 
 
+def parse_published(value: str) -> datetime | None:
+    """Parse a posting timestamp, or return ``None`` if it is unusable.
+
+    Sources disagree on the format: RSS uses RFC 2822 ("Sun, 15 Nov 2026
+    14:01:28 -0500"), Telegram's web preview uses ISO 8601. Naive stamps are
+    read as UTC.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        try:
+            stamp = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
 @dataclass(frozen=True)
 class LeadItem:
     """One candidate posting, normalised across all source kinds."""
@@ -40,6 +64,23 @@ class LeadItem:
     url: str = ""
     published: str = ""
     author: str = ""
+
+    def is_fresh(self, max_age_days: int, now: datetime | None = None) -> bool:
+        """Whether the posting is recent enough to be worth a card.
+
+        A feed that has stopped still serves its last post forever, so without
+        this a three-year-old order would be reported as a fresh lead the first
+        time the source is polled. Items whose date cannot be parsed are kept:
+        a source using an unusual format must not go silent. A non-positive
+        limit disables the check.
+        """
+        if max_age_days <= 0:
+            return True
+        stamp = parse_published(self.published)
+        if stamp is None:
+            return True
+        now = now or datetime.now(timezone.utc)
+        return stamp >= now - timedelta(days=max_age_days)
 
     @property
     def haystack(self) -> str:

@@ -216,6 +216,13 @@ class Poller:
                     try:
                         if not pattern.search(item.haystack):
                             continue
+                        if not item.is_fresh(self._config.max_item_age_days):
+                            logger.debug(
+                                "Stale item skipped in backlog scan (%s): %s",
+                                item.published or "no date",
+                                item.url,
+                            )
+                            continue
                         stats["matched"] += 1
                         outcome = await self._analyse_item(item, [keyword])
                     except Exception as exc:  # noqa: BLE001
@@ -252,6 +259,12 @@ class Poller:
 
         text = item.haystack
         if not text:
+            return result
+
+        if not item.is_fresh(self._config.max_item_age_days):
+            logger.debug(
+                "Stale item skipped (%s): %s", item.published or "no date", item.url
+            )
             return result
 
         matched = await self._db.match_keywords(text)

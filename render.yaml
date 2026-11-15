@@ -43,6 +43,10 @@ services:
         value: "true"
       - key: POLL_INTERVAL
         value: "900"
+      # Ignore postings older than this. A dead feed keeps serving its last
+      # post, which would otherwise arrive as a fresh lead.
+      - key: MAX_ITEM_AGE_DAYS
+        value: "30"
       # Seed starter sources and broad keywords on first run.
       - key: SEED_DEFAULT_SOURCES
         value: "true"
