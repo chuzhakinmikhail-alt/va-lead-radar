@@ -94,6 +94,10 @@ health check и переменные.
 `RENDER_EXTERNAL_URL` с публичным адресом сервиса, и `app/config.py` берёт его
 автоматически. `WEBHOOK_SECRET` Render генерирует сам.
 
+`MONITOR_ALL_CHATS` в `render.yaml` стоит `"false"`. Поставьте `"true"`, если
+хотите, чтобы бот сам брал в работу любой чат, куда его добавили, без
+`/addchat`. Лишние чаты отключайте командой `/pause` прямо в чате.
+
 ### Вариант вручную (без Blueprint)
 
 **New → Web Service**, и укажите:

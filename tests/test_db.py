@@ -74,6 +74,40 @@ async def test_anti_duplicate(backend):
         assert stats["leads"] == 1 and stats["analysed"] == 1
 
 
+@pytest.mark.asyncio
+async def test_pause_hides_chat_from_monitoring(backend):
+    async with backend as db:
+        await _reset(db)
+        await db.add_chat(-1001, "Group A")
+        assert await db.is_monitored(-1001) is True
+
+        assert await db.set_paused(-1001, True) is True
+        assert await db.is_monitored(-1001) is False
+        # The row survives, so auto mode cannot re-adopt a paused chat.
+        chats = await db.list_chats()
+        assert len(chats) == 1 and chats[0].paused is True
+
+        assert await db.set_paused(-1001, False) is True
+        assert await db.is_monitored(-1001) is True
+        assert (await db.list_chats())[0].paused is False
+
+
+@pytest.mark.asyncio
+async def test_set_paused_unknown_chat_reports_false(backend):
+    async with backend as db:
+        await _reset(db)
+        assert await db.set_paused(-9999, True) is False
+
+
+@pytest.mark.asyncio
+async def test_migrate_is_idempotent(backend):
+    async with backend as db:
+        # connect() already migrated; running it again must not raise.
+        await db.migrate()
+        await db.migrate()
+        assert await db.add_chat(-1001, "Group A") is True
+
+
 def test_message_hash_is_stable_and_unique():
     from app.db import message_hash
 

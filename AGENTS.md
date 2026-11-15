@@ -13,7 +13,7 @@ Postgres, Gemini/OpenAI.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest                      # 28 тестов, 3 скипаются без TEST_DATABASE_URL
+pytest                      # 44 теста, 6 скипаются без TEST_DATABASE_URL
 python bot.py               # long polling (локально)
 python main.py              # webhook + /health (хостинг)
 ```
@@ -58,6 +58,22 @@ python main.py              # webhook + /health (хостинг)
 7. **Заглушки в тестах должны иметь `session.close()`.** `SimpleRequestHandler`
    закрывает сессию при остановке; `FakeSession` в `tests/test_webhook.py`.
 
+8. **`paused` — не то же самое, что отсутствие чата.** В авторежиме
+   (`MONITOR_ALL_CHATS=true`) чат подхватывается при первом сообщении. Если
+   исключать чат удалением, он тут же вернётся. Поэтому `/pause` пишет флаг в
+   `chats.paused`, а `is_monitored()` требует `paused = 0`; `_auto_register()`
+   никогда не оживляет уже существующую строку.
+
+9. **`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — только Postgres.** SQLite
+   такого синтаксиса не знает. Миграции разведены: `POSTGRES_MIGRATIONS`
+   выполняются в `PostgresDatabase.connect()`, а `SQLiteDatabase.migrate()`
+   смотрит `PRAGMA table_info(chats)`. Оба метода идемпотентны и вызываются
+   при старте, так что старая база подтягивается без ручных шагов.
+
+10. **Секреты не должны попадать в `/export`.** `_settings_json()` собирает
+    только несекретные поля; ключи LLM и токен бота в выгрузку не входят.
+    Тест `test_settings_json_is_valid_and_secret_free` это проверяет.
+
 ## Деплой
 
 Neon (Postgres) + Render (webhook-сервис). Полная инструкция — `DEPLOY.md`,
@@ -71,8 +87,25 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
 - Без заголовка `X-Telegram-Bot-Api-Secret-Token` webhook отвечает 401, с ним —
   200. Цепочка «апдейт → ключевое слово → запрос к LLM → запись в базу»
   проходит целиком; сбой LLM логируется и не роняет процесс.
-- Тесты: 27 passed / 3 skipped без `TEST_DATABASE_URL`; с реальным Postgres —
-  30 passed (проверено на Render Postgres 18, SSL).
+- Тесты: 44 passed / 6 skipped без `TEST_DATABASE_URL`; с реальным Postgres —
+  50 passed (проверено на Render Postgres 18, SSL).
+
+### Авто-мониторинг (MONITOR_ALL_CHATS)
+
+- Флаг читается в `config.py` (`_env_bool`), по умолчанию `false`.
+- `_auto_register()` в `monitor.py` вызывается только когда чат не в списке;
+  заводит строку в `chats` с названием и пропускает сообщение дальше.
+- Личные чаты не подхватываются: `MONITORED_TYPES` = группа/супергруппа/канал.
+- Миграция `paused` проверена на живой прод-базе: до прогона колонок было три
+  (`chat_id`, `title`, `added_at`), после — четыре. Тесты гоняются и против
+  прод-Postgres через `TEST_DATABASE_URL`.
+
+### Выгрузка настроек
+
+- `/settings` — текст: авторежим, модель, шлюз, хранилище, чаты с пометкой
+  паузы, слова, счётчики.
+- `/export` — JSON-файл (`_settings_json`) с блоком `env` для повторного
+  развёртывания. Токен и ключ LLM в файл не пишутся.
 
 ### Инфраструктура Render
 

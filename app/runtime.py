@@ -31,7 +31,11 @@ BOT_COMMANDS = [
     BotCommand(command="addchat", description="Добавить чат в мониторинг"),
     BotCommand(command="addkeyword", description="Добавить ключевое слово"),
     BotCommand(command="remove", description="Удалить чат или слово"),
+    BotCommand(command="pause", description="Пауза для чата"),
+    BotCommand(command="resume", description="Снять паузу"),
     BotCommand(command="list", description="Показать чаты и слова"),
+    BotCommand(command="settings", description="Текущие настройки"),
+    BotCommand(command="export", description="Выгрузить настройки файлом"),
     BotCommand(command="stats", description="Статистика"),
 ]
 

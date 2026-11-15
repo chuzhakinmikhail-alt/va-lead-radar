@@ -8,7 +8,9 @@
 
 Tables
 ------
-chats    : chats/channels being monitored.
+chats    : chats/channels being monitored. ``paused`` excludes a chat from
+           monitoring without deleting it, which matters in auto mode: a deleted
+           chat would simply be re-registered on its next message.
 keywords : trigger keywords (case-insensitive, stored lowercased).
 leads    : every analysed message; the primary key doubles as anti-duplicate
            protection so one message is never forwarded twice.
@@ -30,7 +32,8 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
     chat_id    INTEGER PRIMARY KEY,
     title      TEXT    NOT NULL DEFAULT '',
-    added_at   TEXT    NOT NULL
+    added_at   TEXT    NOT NULL,
+    paused     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS keywords (
@@ -55,7 +58,8 @@ POSTGRES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
     chat_id    BIGINT PRIMARY KEY,
     title      TEXT   NOT NULL DEFAULT '',
-    added_at   TEXT   NOT NULL
+    added_at   TEXT   NOT NULL,
+    paused     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS keywords (
@@ -76,6 +80,12 @@ CREATE TABLE IF NOT EXISTS leads (
 CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at);
 """
 
+# Columns added after the first release, applied at startup. Postgres supports
+# IF NOT EXISTS; SQLite does not, so its backend inspects the table instead.
+POSTGRES_MIGRATIONS = (
+    "ALTER TABLE chats ADD COLUMN IF NOT EXISTS paused INTEGER NOT NULL DEFAULT 0",
+)
+
 # libpq-only query parameters that asyncpg forwards to the server as settings and
 # then rejects ("unrecognized configuration parameter"). Neon adds
 # `channel_binding=require` to every connection string by default.
@@ -92,6 +102,7 @@ _DSN_STRIP_PARAMS = {
 class Chat:
     chat_id: int
     title: str
+    paused: bool = False
 
 
 def _now() -> str:
@@ -147,6 +158,9 @@ class Database(ABC):
         await self.close()
 
     @abstractmethod
+    async def migrate(self) -> None: ...
+
+    @abstractmethod
     async def add_chat(self, chat_id: int, title: str = "") -> bool: ...
 
     @abstractmethod
@@ -157,6 +171,9 @@ class Database(ABC):
 
     @abstractmethod
     async def is_monitored(self, chat_id: int) -> bool: ...
+
+    @abstractmethod
+    async def set_paused(self, chat_id: int, paused: bool) -> bool: ...
 
     @abstractmethod
     async def add_keyword(self, keyword: str) -> bool: ...
@@ -216,6 +233,7 @@ class SQLiteDatabase(Database):
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(SQLITE_SCHEMA)
         await self._conn.commit()
+        await self.migrate()
         logger.info("SQLite database ready at %s", self.path)
 
     async def close(self) -> None:
@@ -228,6 +246,16 @@ class SQLiteDatabase(Database):
         if self._conn is None:
             raise RuntimeError("Database is not connected; call connect() first")
         return self._conn
+
+    async def migrate(self) -> None:
+        cur = await self.conn.execute("PRAGMA table_info(chats)")
+        columns = {r["name"] for r in await cur.fetchall()}
+        if "paused" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE chats ADD COLUMN paused INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.conn.commit()
+            logger.info("Migrated chats table: added paused column")
 
     async def add_chat(self, chat_id: int, title: str = "") -> bool:
         cur = await self.conn.execute(
@@ -252,17 +280,25 @@ class SQLiteDatabase(Database):
 
     async def list_chats(self) -> list[Chat]:
         cur = await self.conn.execute(
-            "SELECT chat_id, title FROM chats ORDER BY added_at ASC"
+            "SELECT chat_id, title, paused FROM chats ORDER BY added_at ASC"
         )
         return [
-            Chat(chat_id=r["chat_id"], title=r["title"]) for r in await cur.fetchall()
+            Chat(chat_id=r["chat_id"], title=r["title"], paused=bool(r["paused"]))
+            for r in await cur.fetchall()
         ]
 
     async def is_monitored(self, chat_id: int) -> bool:
         cur = await self.conn.execute(
-            "SELECT 1 FROM chats WHERE chat_id = ? LIMIT 1", (chat_id,)
+            "SELECT 1 FROM chats WHERE chat_id = ? AND paused = 0 LIMIT 1", (chat_id,)
         )
         return await cur.fetchone() is not None
+
+    async def set_paused(self, chat_id: int, paused: bool) -> bool:
+        cur = await self.conn.execute(
+            "UPDATE chats SET paused = ? WHERE chat_id = ?", (int(paused), chat_id)
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
 
     async def add_keyword(self, keyword: str) -> bool:
         keyword = keyword.strip().lower()
@@ -360,6 +396,8 @@ class PostgresDatabase(Database):
         self._pool = await asyncpg.create_pool(self.dsn, **kwargs)
         async with self._pool.acquire() as conn:
             await conn.execute(POSTGRES_SCHEMA)
+            for statement in POSTGRES_MIGRATIONS:
+                await conn.execute(statement)
         logger.info(
             "Postgres database ready (pool %s-%s)", self._min_size, self._max_size
         )
@@ -374,6 +412,11 @@ class PostgresDatabase(Database):
         if self._pool is None:
             raise RuntimeError("Database is not connected; call connect() first")
         return self._pool
+
+    async def migrate(self) -> None:
+        async with self.pool.acquire() as conn:
+            for statement in POSTGRES_MIGRATIONS:
+                await conn.execute(statement)
 
     async def add_chat(self, chat_id: int, title: str = "") -> bool:
         async with self.pool.acquire() as conn:
@@ -405,14 +448,26 @@ class PostgresDatabase(Database):
     async def list_chats(self) -> list[Chat]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT chat_id, title FROM chats ORDER BY added_at ASC"
+                "SELECT chat_id, title, paused FROM chats ORDER BY added_at ASC"
             )
-        return [Chat(chat_id=r["chat_id"], title=r["title"]) for r in rows]
+        return [
+            Chat(chat_id=r["chat_id"], title=r["title"], paused=bool(r["paused"]))
+            for r in rows
+        ]
 
     async def is_monitored(self, chat_id: int) -> bool:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT 1 FROM chats WHERE chat_id = $1 LIMIT 1", chat_id
+                "SELECT 1 FROM chats WHERE chat_id = $1 AND paused = 0 LIMIT 1", chat_id
+            )
+        return row is not None
+
+    async def set_paused(self, chat_id: int, paused: bool) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE chats SET paused = $1 WHERE chat_id = $2 RETURNING chat_id",
+                int(paused),
+                chat_id,
             )
         return row is not None
 

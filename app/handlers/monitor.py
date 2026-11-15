@@ -28,6 +28,25 @@ def _extract_text(message: Message) -> str:
     return (message.text or message.caption or "").strip()
 
 
+async def _auto_register(message: Message, db: Database) -> bool:
+    """Adopt a chat in auto mode; False when it stays unmonitored.
+
+    ``add_chat`` returns True only for a newly inserted row, which avoids
+    listing every chat on the hot path. A chat that already exists is left
+    alone, so a paused chat is never revived by an incoming message.
+    """
+    chat = message.chat
+    if chat.type not in MONITORED_TYPES:
+        return False
+
+    title = chat.title or chat.full_name or ""
+    if await db.add_chat(chat.id, title):
+        logger.info("Auto-monitoring new chat %s (%s)", chat.id, title or "без названия")
+        return True
+
+    return await db.is_monitored(chat.id)
+
+
 def build_message_link(message: Message) -> str:
     """Best-effort public link to a message."""
     chat = message.chat
@@ -89,7 +108,12 @@ async def on_message(
     chat_id = message.chat.id
     try:
         if not await db.is_monitored(chat_id):
-            return
+            if not config.monitor_all_chats:
+                return
+            # Auto mode: adopt the chat on its first message. A paused chat is
+            # registered but is_monitored() is False, so this never revives it.
+            if not await _auto_register(message, db):
+                return
 
         text = _extract_text(message)
         if not text:

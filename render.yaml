@@ -34,6 +34,9 @@ services:
         generateValue: true
       - key: LLM_PROVIDER
         value: gemini
+      # Adopt every chat the bot is added to, without /addchat. /pause excludes one.
+      - key: MONITOR_ALL_CHATS
+        value: "false"
       # Uncomment to use an OpenAI-compatible gateway (e.g. OpenRouter) instead:
       # - key: OPENAI_BASE_URL
       #   value: https://openrouter.ai/api/v1

@@ -51,6 +51,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = _env(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _env_list(name: str) -> tuple[str, ...]:
     """Read a comma- or newline-separated list from the environment."""
     raw = _env(name, "") or ""
@@ -73,6 +80,9 @@ class Config:
     log_level: str = "INFO"
     max_analyze_chars: int = 4000
     default_keywords: tuple[str, ...] = DEFAULT_KEYWORDS
+    # Auto-monitor every chat the bot is added to, instead of requiring
+    # /addchat. Chats are registered on their first message; /pause withdraws one.
+    monitor_all_chats: bool = False
     # Postgres DSN (Neon / Render Postgres). Empty keeps the local SQLite file,
     # which is only safe on hosts with a persistent disk.
     database_url: str = ""
@@ -178,6 +188,7 @@ def load_config() -> Config:
         log_path=_resolve_path(_env("LOG_PATH"), BASE_DIR / "logs" / "bot.log"),
         log_level=(_env("LOG_LEVEL", "INFO") or "INFO").upper(),
         max_analyze_chars=max(200, _env_int("MAX_ANALYZE_CHARS", 4000)),
+        monitor_all_chats=_env_bool("MONITOR_ALL_CHATS", False),
         database_url=database_url,
         webhook_base_url=base_url,
         webhook_secret=_env("WEBHOOK_SECRET", "") or "",
