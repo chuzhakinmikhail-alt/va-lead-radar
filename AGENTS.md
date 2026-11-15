@@ -86,11 +86,42 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
   (для сервиса в Render) или `externalConnectionString` (снаружи).
   Пароль/хост в репозиторий не коммитить.
 
+### Живой сервис
+
+- Репозиторий: `chuzhakinmikhail-alt/va-lead-radar` (ветка `main`, auto-deploy).
+- Render web service: `srv-dbssq0ec6qcc73a2tap0`, план free, регион oregon,
+  URL https://va-lead-radar.onrender.com, health check `/health`.
+- Переменные окружения задаются через
+  `PUT /v1/services/<id>/env-vars` (полный список целиком, не патч).
+- Логи через `GET /v1/services/<id>/logs` недоступны (404) — проверять состояние
+  по `/health` и по содержимому таблицы `leads`.
+
+### LLM в проде
+
+- Используется OpenRouter (`OPENAI_BASE_URL=https://openrouter.ai/api/v1`,
+  `LLM_PROVIDER=openai`), ключ взят из существующего сервиса `aiopen-agent`
+  (`AVO_OPENAI_API_KEY`) — он же владельца.
+- Ключ бесплатного тира: платные модели дают `402 Payment Required`, поэтому
+  работаем на бесплатных `:free`-моделях.
+- Бесплатные модели часто отдают `429 Too Many Requests`. От этого спасает
+  `LLM_FALLBACK_MODELS` — цепочка резервных моделей.
+- Проверено на проде: «ищу разработчика для бота» → `is_lead=1`,
+  intent `разработка бота`; «нужен сайт» → `is_lead=1`, intent `сайт`.
+  Три одинаковых апдейта дали одну строку в `leads` — анти-дубли работают.
+
+### Полезно знать
+
+- `leads` содержит все проанализированные сообщения, не только лиды
+  (`is_lead` = 0/1). Первичный ключ — `msg_hash`, он же защита от дублей.
+- `ADMIN_ID` владельца — `5450549001` (взят из сервиса `vapay`,
+  `ADMIN_TELEGRAM_IDS`).
+
 ## Ограничение окружения
 
 GitHub App `openhands-ai` (installation `175430587`) имеет `contents: write`,
 но **не имеет `administration`**, поэтому `POST /user/repos` возвращает 403
-`Resource not accessible by integration`. Репозиторий создаётся вручную, дальше
-push идёт нормально. Проверено также: `gh` CLI авторизован тем же токеном (та же
-ошибка), git credential helper обменивает JWT на токен, но прав это не меняет,
-в браузере сессии GitHub нет (`logged_in=no`).
+`Resource not accessible by integration`. Новый репозиторий нужно создать
+вручную; после этого push идёт нормально (так и был создан
+`chuzhakinmikhail-alt/va-lead-radar`). Проверено также: `gh` CLI авторизован тем
+же токеном (та же ошибка), git credential helper обменивает JWT на токен, но
+прав это не меняет, в браузере сессии GitHub нет (`logged_in=no`).
