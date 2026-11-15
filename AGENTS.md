@@ -64,8 +64,33 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
 конфигурация — `render.yaml`. Локально и на VPS — long polling без
 `WEBHOOK_BASE_URL`.
 
+### Что уже проверено (живой прогон)
+
+- `main.py` поднимается с реальным Postgres и регистрирует webhook в Telegram.
+- `/health` отдаёт `status: ok` и `storage: postgres`.
+- Без заголовка `X-Telegram-Bot-Api-Secret-Token` webhook отвечает 401, с ним —
+  200. Цепочка «апдейт → ключевое слово → запрос к LLM → запись в базу»
+  проходит целиком; сбой LLM логируется и не роняет процесс.
+- Тесты: 27 passed / 3 skipped без `TEST_DATABASE_URL`; с реальным Postgres —
+  30 passed (проверено на Render Postgres 18, SSL).
+
+### Инфраструктура Render
+
+- Free-тариф Render разрешает **только одну** бесплатную базу. Она уже занята:
+  `va-digital-db` (`dpg-dbfjrd67bikc73drd4ug-a`, oregon, PG 18, БД `vadigital`).
+- Для изоляции создана отдельная БД `va_lead_radar` внутри этого инстанса —
+  таблицы `chats`/`keywords`/`leads` не пересекаются с другими проектами.
+  Имя БД подставляется вместо `vadigital` в конце строки подключения.
+- Строку подключения даёт
+  `GET /v1/postgres/<id>/connection-info` → `internalConnectionString`
+  (для сервиса в Render) или `externalConnectionString` (снаружи).
+  Пароль/хост в репозиторий не коммитить.
+
 ## Ограничение окружения
 
-GitHub App-токен в этой среде имеет `contents: write`, но **не имеет
-`administration`**, поэтому `POST /user/repos` возвращает 403. Репозиторий
-создаётся вручную, дальше push идёт нормально.
+GitHub App `openhands-ai` (installation `175430587`) имеет `contents: write`,
+но **не имеет `administration`**, поэтому `POST /user/repos` возвращает 403
+`Resource not accessible by integration`. Репозиторий создаётся вручную, дальше
+push идёт нормально. Проверено также: `gh` CLI авторизован тем же токеном (та же
+ошибка), git credential helper обменивает JWT на токен, но прав это не меняет,
+в браузере сессии GitHub нет (`logged_in=no`).
