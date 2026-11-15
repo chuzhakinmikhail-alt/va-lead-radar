@@ -77,7 +77,8 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
 ### Инфраструктура Render
 
 - Free-тариф Render разрешает **только одну** бесплатную базу. Она уже занята:
-  `va-digital-db` (`dpg-dbfjrd67bikc73drd4ug-a`, oregon, PG 18, БД `vadigital`).
+  `va-digital-db` (oregon, PG 18, БД `vadigital`); её id виден в
+  `GET /v1/postgres?limit=20`.
 - Для изоляции создана отдельная БД `va_lead_radar` внутри этого инстанса —
   таблицы `chats`/`keywords`/`leads` не пересекаются с другими проектами.
   Имя БД подставляется вместо `vadigital` в конце строки подключения.
@@ -89,7 +90,7 @@ Neon (Postgres) + Render (webhook-сервис). Полная инструкци
 ### Живой сервис
 
 - Репозиторий: `chuzhakinmikhail-alt/va-lead-radar` (ветка `main`, auto-deploy).
-- Render web service: `srv-dbssq0ec6qcc73a2tap0`, план free, регион oregon,
+- Render web service: план free, регион oregon,
   URL https://va-lead-radar.onrender.com, health check `/health`.
 - Переменные окружения задаются через
   `PUT /v1/services/<id>/env-vars` (полный список целиком, не патч).
