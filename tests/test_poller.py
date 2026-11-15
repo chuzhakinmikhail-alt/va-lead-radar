@@ -205,3 +205,132 @@ def test_card_escapes_html_in_source_text():
     card = format_source_card(item, verdict, [], [], item.url)
     assert "<script>" not in card
     assert "&lt;script&gt;" in card
+
+
+class FakeSource:
+    """Stands in for a real source so a scan needs no network."""
+
+    def __init__(self, items):
+        self._items = items
+        self.fetches = 0
+
+    async def fetch(self, client):
+        self.fetches += 1
+        return self._items
+
+
+def _patch_source(monkeypatch, items):
+    """Point the poller at a fake source and return it."""
+    fake = FakeSource(items)
+    monkeypatch.setattr(
+        "app.poller.create_source", lambda *a, **kw: fake
+    )
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_sends_matches_for_the_new_keyword(tmp_path, monkeypatch):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        analyzer, bot = FakeAnalyzer(), FakeBot()
+        poller = _poller(db, analyzer, bot)
+        _patch_source(
+            monkeypatch,
+            [
+                make_item("orders/1", text="Нужен логотип, пишите @dev_ivan"),
+                make_item("orders/2", text="Продаю ноутбук"),
+            ],
+        )
+
+        stats = await poller.scan_backlog("логотип")
+        assert stats["sources"] == 1
+        assert stats["items"] == 2
+        assert stats["matched"] == 1
+        assert stats["leads"] == 1
+        assert stats["sent"] == 1
+        assert len(bot.sent) == 1
+        assert "@dev_ivan" in bot.sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_ignores_items_already_classified(tmp_path, monkeypatch):
+    """A second keyword overlapping the first must not replay old cards."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        analyzer, bot = FakeAnalyzer(), FakeBot()
+        poller = _poller(db, analyzer, bot)
+        _patch_source(
+            monkeypatch, [make_item("orders/1", text="Нужен логотип и сайт")]
+        )
+
+        first = await poller.scan_backlog("логотип")
+        assert first["sent"] == 1
+
+        second = await poller.scan_backlog("сайт")
+        assert second["matched"] == 1
+        assert second["leads"] == 0
+        assert second["sent"] == 0
+        assert len(bot.sent) == 1
+        # The duplicate is caught before the LLM, so it is never re-classified.
+        assert len(analyzer.seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_respects_the_item_cap(tmp_path, monkeypatch):
+    from app.poller import MAX_BACKLOG
+
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        poller = _poller(db, FakeAnalyzer(), FakeBot())
+        items = [
+            make_item(f"orders/{i}", text="Нужен сайт под ключ")
+            for i in range(MAX_BACKLOG + 5)
+        ]
+        _patch_source(monkeypatch, items)
+
+        stats = await poller.scan_backlog("сайт")
+        assert stats["matched"] == MAX_BACKLOG
+        assert stats["leads"] == MAX_BACKLOG
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_skips_when_polling_disabled(tmp_path, monkeypatch):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        poller = _poller(
+            db, FakeAnalyzer(), FakeBot(), config=make_config(poll_sources=False)
+        )
+        fake = _patch_source(monkeypatch, [make_item()])
+        assert await poller.scan_backlog("ищу разработчика") == {
+            "sources": 0,
+            "items": 0,
+            "matched": 0,
+            "leads": 0,
+            "sent": 0,
+        }
+        assert fake.fetches == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_without_sources_does_nothing(tmp_path, monkeypatch):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        poller = _poller(db, FakeAnalyzer(), FakeBot())
+        fake = _patch_source(monkeypatch, [make_item()])
+        assert (await poller.scan_backlog("сайт"))["sources"] == 0
+        assert fake.fetches == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_backlog_soon_runs_in_background(tmp_path, monkeypatch):
+    import asyncio
+
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_source("tg_public", "orders", "Orders")
+        analyzer, bot = FakeAnalyzer(), FakeBot()
+        poller = _poller(db, analyzer, bot)
+        _patch_source(monkeypatch, [make_item(text="Нужен логотип")])
+
+        poller.scan_backlog_soon("логотип")
+        assert poller._scan_task is not None
+        await poller._scan_task
+        assert len(bot.sent) == 1

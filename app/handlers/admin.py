@@ -60,8 +60,9 @@ HELP_TEXT = (
     "/pause, /resume — пауза/снятие для текущего чата\n"
     "/remove chat &lt;chat_id&gt; — удалить чат\n\n"
     "<b>Ключевые слова</b>\n"
-    "/addkeyword &lt;слово&gt; — добавить ключевое слово\n"
-    "/remove keyword &lt;слово&gt; — удалить ключевое слово\n\n"
+    "/addkeyword &lt;слово&gt; — добавить слово и сразу поискать по нему\n"
+    "/remove keyword &lt;слово&gt; — удалить ключевое слово\n"
+    "ℹ️ Дальше слово работает само: всё новое, что подходит, приходит карточкой.\n\n"
     "<b>Прочее</b>\n"
     "/list — показать чаты, источники и слова\n"
     "/settings — текущие настройки\n"
@@ -120,7 +121,7 @@ async def cmd_addchat(
 
 @router.message(Command("addkeyword"))
 async def cmd_addkeyword(
-    message: Message, command: CommandObject, config: Config, db: Database
+    message: Message, command: CommandObject, config: Config, db: Database, poller=None
 ) -> None:
     if not await _guard(message, config):
         return
@@ -133,10 +134,20 @@ async def cmd_addkeyword(
         return
 
     if await db.add_keyword(keyword):
-        await message.answer(f"✅ Ключевое слово добавлено: <b>{keyword}</b>")
         logger.info("Keyword added: %r", keyword)
+        lines = [f"✅ Ключевое слово добавлено: <b>{html.escape(keyword)}</b>"]
+        # A keyword is only worth adding if it produces results now, so scan the
+        # current window of every source immediately instead of waiting for the
+        # next scheduled cycle. Leads arrive as separate cards.
+        if poller is not None and config.poll_sources:
+            poller.scan_backlog_soon(keyword)
+            lines.append(
+                "🔎 Ищу подходящие объявления в источниках — пришлю карточки "
+                "по мере находок."
+            )
+        await message.answer("\n".join(lines))
     else:
-        await message.answer(f"ℹ️ Ключевое слово уже есть: <b>{keyword}</b>")
+        await message.answer(f"ℹ️ Ключевое слово уже есть: <b>{html.escape(keyword)}</b>")
 
 
 @router.message(Command("list"))

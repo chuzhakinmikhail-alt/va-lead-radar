@@ -52,8 +52,8 @@ DEFAULT_SOURCES: tuple[tuple[str, str, str], ...] = (
     ("rss", "https://www.freelancer.com/rss.xml", "Freelancer.com"),
     ("rss", "https://weworkremotely.com/categories/remote-programming-jobs.rss",
      "We Work Remotely"),
-    ("tg_public", "freelance_orders", "TG: freelance_orders"),
     ("tg_public", "freelance_zakazy", "TG: freelance_zakazy"),
+    ("tg_public", "zakazy_it", "TG: zakazy_it"),
 )
 
 

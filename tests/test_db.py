@@ -60,6 +60,37 @@ async def test_keywords_seed_and_match(backend):
 
 
 @pytest.mark.asyncio
+async def test_keywords_match_whole_words_only(backend):
+    """A short keyword must not fire inside a longer unrelated word."""
+    async with backend as db:
+        await _reset(db)
+        await db.add_keyword("бот")
+        await db.add_keyword("сайт")
+        # "работа" contains "бот" and "сайты" contains "сайт" as substrings.
+        assert await db.match_keywords("Ищу работу в офисе") == []
+        assert await db.match_keywords("нужен сайты") == []
+        assert await db.match_keywords("Нужен бот для магазина") == ["бот"]
+        assert await db.match_keywords("Нужен сайт, срочно!") == ["сайт"]
+
+
+def test_match_keyword_list_handles_edges():
+    from app.db import match_keyword_list
+
+    assert match_keyword_list([], "текст") == []
+    assert match_keyword_list(["сайт"], "") == []
+    # Punctuation around the keyword is not part of the word.
+    assert match_keyword_list(["сайт"], "сайт, лендинг и бот") == ["сайт"]
+    # A hyphen is a word separator, so the keyword still matches.
+    assert match_keyword_list(["бот"], "телеграм-бот") == ["бот"]
+    # A phrase matches as a phrase, not word by word.
+    assert match_keyword_list(["нужен сайт"], "нужен новый сайт") == []
+    assert match_keyword_list(["нужен сайт"], "нужен сайт!") == ["нужен сайт"]
+    # Regex metacharacters in a keyword stay literal.
+    assert match_keyword_list(["сайт?"], "нужен сайт? да") == ["сайт?"]
+    assert match_keyword_list(["c++"], "ищу c++ разработчика") == ["c++"]
+
+
+@pytest.mark.asyncio
 async def test_anti_duplicate(backend):
     async with backend as db:
         await _reset(db)

@@ -22,13 +22,17 @@ from aiogram.exceptions import TelegramAPIError
 from .analyzer import LeadAnalyzer
 from .config import Config
 from .contacts import extract_contacts
-from .db import Database
+from .db import Database, keyword_pattern
 from .sources import LeadItem, build_client, create_source
 
 logger = logging.getLogger(__name__)
 
 # A single poll cycle must not run forever; feeds occasionally hang.
 CYCLE_TIMEOUT = 300.0
+
+# Cap on items classified in one backlog scan. Adding a broad keyword can match
+# most of a feed, and every match costs an LLM call.
+MAX_BACKLOG = 25
 
 
 def item_hash(item: LeadItem) -> str:
@@ -58,7 +62,12 @@ class Poller:
         self._bot = bot
         self._userbot_session = userbot_session
         self._task: asyncio.Task[None] | None = None
+        self._scan_task: asyncio.Task[None] | None = None
         self._client = None
+        # Keeps two backlog scans from running at once. The scheduled cycle is
+        # deliberately not locked against a scan: the database already prevents
+        # a double send, so the worst a race costs is one extra classification.
+        self._scan_lock = asyncio.Lock()
 
     # ---- lifecycle -----------------------------------------------------
     async def start(self) -> None:
@@ -72,6 +81,13 @@ class Poller:
         )
 
     async def stop(self) -> None:
+        if self._scan_task is not None:
+            self._scan_task.cancel()
+            try:
+                await self._scan_task
+            except asyncio.CancelledError:
+                pass
+            self._scan_task = None
         if self._task is None:
             return
         self._task.cancel()
@@ -149,6 +165,88 @@ class Poller:
         )
         return stats
 
+    # ---- backlog scan --------------------------------------------------
+    async def scan_backlog(self, keyword: str) -> dict[str, int]:
+        """Classify what the sources hold right now against one keyword.
+
+        Adding a keyword is only useful if it pays off immediately, but the
+        scheduled cycle may be up to ``poll_interval`` away and only ever looks
+        at what is new. This walks the current window of every active source,
+        keeps the items matching ``keyword`` and sends the leads.
+
+        Anti-duplicate still applies: an item already classified is skipped, so
+        a keyword that overlaps an existing one does not replay old cards.
+        """
+        stats = {"sources": 0, "items": 0, "matched": 0, "leads": 0, "sent": 0}
+        if not self._config.poll_sources:
+            logger.debug("Backlog scan skipped: source polling is disabled")
+            return stats
+
+        pattern = keyword_pattern(keyword)
+        rows = await self._db.list_sources(include_paused=False)
+        if not rows:
+            return stats
+
+        if self._client is None:
+            self._client = build_client()
+
+        async with self._scan_lock:
+            for row in rows:
+                source = create_source(
+                    row.kind, row.target, row.title, userbot_session=self._userbot_session
+                )
+                if source is None:
+                    continue
+                stats["sources"] += 1
+                try:
+                    items = await source.fetch(self._client)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Backlog fetch failed for %s: %s", row.source_id, exc)
+                    continue
+
+                stats["items"] += len(items)
+                for item in items:
+                    if stats["matched"] >= MAX_BACKLOG:
+                        logger.info(
+                            "Backlog scan hit the %s item cap; rest deferred to the "
+                            "next poll cycle",
+                            MAX_BACKLOG,
+                        )
+                        break
+                    try:
+                        if not pattern.search(item.haystack):
+                            continue
+                        stats["matched"] += 1
+                        outcome = await self._analyse_item(item, [keyword])
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Backlog item failed (%s): %s", row.source_id, exc)
+                        continue
+                    stats["leads"] += outcome["leads"]
+                    stats["sent"] += outcome["sent"]
+
+        logger.info(
+            "Backlog scan for %r: %s source(s), %s item(s), %s matched, "
+            "%s lead(s), %s sent",
+            keyword,
+            stats["sources"],
+            stats["items"],
+            stats["matched"],
+            stats["leads"],
+            stats["sent"],
+        )
+        return stats
+
+    def scan_backlog_soon(self, keyword: str) -> None:
+        """Run :meth:`scan_backlog` in the background.
+
+        The card is delivered from inside the scan, so the caller can answer the
+        command at once instead of holding the update open for a minute.
+        """
+        if self._scan_task is not None and not self._scan_task.done():
+            logger.info("Backlog scan already running; %r joins the next cycle", keyword)
+            return
+        self._scan_task = asyncio.create_task(self.scan_backlog(keyword))
+
     async def _process(self, item: LeadItem) -> dict[str, int]:
         result = {"matched": 0, "leads": 0, "sent": 0}
 
@@ -161,6 +259,22 @@ class Poller:
             return result
         result["matched"] = 1
 
+        outcome = await self._analyse_item(item, matched)
+        result["leads"] = outcome["leads"]
+        result["sent"] = outcome["sent"]
+        return result
+
+    async def _analyse_item(
+        self, item: LeadItem, matched: list[str]
+    ) -> dict[str, int]:
+        """Classify one already-matched item, store it and deliver a lead card.
+
+        Shared by the scheduled cycle and the on-demand backlog scan so both
+        deduplicate, store and render identically.
+        """
+        result = {"leads": 0, "sent": 0}
+
+        text = item.haystack
         digest = item_hash(item)
         if await self._db.is_duplicate(digest):
             logger.debug("Duplicate source item skipped: %s", digest)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -171,6 +172,35 @@ def message_hash(chat_id: int, message_id: int) -> str:
     """Stable hash identifying a single message inside a chat."""
     raw = f"{chat_id}:{message_id}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+# Word characters for keyword matching. Python's ``\b`` only knows ASCII, so
+# Cyrillic needs an explicit class or "бот" would match inside "работа".
+_WORD_CHARS = "0-9A-Za-z_\\u0400-\\u04ff"
+_LEFT_EDGE = f"(?<![{_WORD_CHARS}])"
+_RIGHT_EDGE = f"(?![{_WORD_CHARS}])"
+
+
+def keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Compile a keyword into a whole-word, case-insensitive matcher.
+
+    Matching on word boundaries rather than plain substring is what keeps a
+    short keyword useful: ``бот`` must not fire on ``работа``. A keyword that
+    is a phrase ("нужен бот") simply matches as a phrase, and punctuation
+    inside it (``нужен сайт?``) is escaped so it stays literal.
+    """
+    return re.compile(_LEFT_EDGE + re.escape(keyword) + _RIGHT_EDGE, re.IGNORECASE)
+
+
+def match_keyword_list(keywords: list[str], text: str) -> list[str]:
+    """Return the keywords present in ``text`` as whole words.
+
+    Kept as a free function so both backends share one implementation and the
+    behaviour can be unit-tested without a database.
+    """
+    if not text:
+        return []
+    return [kw for kw in keywords if kw and keyword_pattern(kw).search(text)]
 
 
 def split_ssl(dsn: str) -> tuple[str, bool]:
@@ -430,8 +460,7 @@ class SQLiteDatabase(Database):
     async def match_keywords(self, text: str) -> list[str]:
         if not text:
             return []
-        haystack = text.lower()
-        return [kw for kw in await self.list_keywords() if kw in haystack]
+        return match_keyword_list(await self.list_keywords(), text)
 
     async def is_duplicate(self, msg_hash: str) -> bool:
         cur = await self.conn.execute(
@@ -691,8 +720,7 @@ class PostgresDatabase(Database):
     async def match_keywords(self, text: str) -> list[str]:
         if not text:
             return []
-        haystack = text.lower()
-        return [kw for kw in await self.list_keywords() if kw in haystack]
+        return match_keyword_list(await self.list_keywords(), text)
 
     async def is_duplicate(self, msg_hash: str) -> bool:
         async with self.pool.acquire() as conn:

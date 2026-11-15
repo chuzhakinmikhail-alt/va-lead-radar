@@ -10,6 +10,7 @@ from app.config import Config
 from app.db import SQLiteDatabase
 from app.handlers.admin import (
     _settings_text,
+    cmd_addkeyword,
     cmd_addsource,
     cmd_list,
     cmd_pause_source,
@@ -230,3 +231,97 @@ async def test_settings_text_includes_sources_and_polling(tmp_path):
         text = await _settings_text(make_config(), db)
         assert "tg_public:orders" in text
         assert "Опрос источников" in text
+
+
+class FakeScanPoller:
+    """Records scan requests instead of touching the network."""
+
+    def __init__(self) -> None:
+        self.scanned: list[str] = []
+
+    def scan_backlog_soon(self, keyword: str) -> None:
+        self.scanned.append(keyword)
+
+
+@pytest.mark.asyncio
+async def test_addkeyword_triggers_an_immediate_scan(tmp_path):
+    """Adding a keyword must pay off now, not at the next scheduled cycle."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        poller = FakeScanPoller()
+        message = FakeMessage()
+        await cmd_addkeyword(
+            message, FakeCommand("addkeyword", "нужен логотип"), make_config(), db, poller
+        )
+        assert "✅" in message.last
+        assert poller.scanned == ["нужен логотип"]
+        assert "Ищу подходящие" in message.last
+        assert await db.list_keywords() == ["нужен логотип"]
+
+
+@pytest.mark.asyncio
+async def test_addkeyword_escapes_html_in_the_reply(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        message = FakeMessage()
+        await cmd_addkeyword(
+            message,
+            FakeCommand("addkeyword", "<b>сайт</b>"),
+            make_config(),
+            db,
+            FakeScanPoller(),
+        )
+        assert "&lt;b&gt;сайт&lt;/b&gt;" in message.last
+        assert "<b>сайт</b>" not in message.last
+
+
+@pytest.mark.asyncio
+async def test_addkeyword_without_poller_still_stores_the_word(tmp_path):
+    """No poller (e.g. sources disabled) must not break the command."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        message = FakeMessage()
+        await cmd_addkeyword(
+            message, FakeCommand("addkeyword", "сайт"), make_config(), db, None
+        )
+        assert "✅" in message.last
+        assert "Ищу подходящие" not in message.last
+        assert await db.list_keywords() == ["сайт"]
+
+
+@pytest.mark.asyncio
+async def test_addkeyword_does_not_scan_when_sources_disabled(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        poller = FakeScanPoller()
+        message = FakeMessage()
+        await cmd_addkeyword(
+            message,
+            FakeCommand("addkeyword", "сайт"),
+            make_config(poll_sources=False),
+            db,
+            poller,
+        )
+        assert poller.scanned == []
+
+
+@pytest.mark.asyncio
+async def test_addkeyword_rejects_an_empty_keyword(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        poller = FakeScanPoller()
+        message = FakeMessage()
+        await cmd_addkeyword(
+            message, FakeCommand("addkeyword", "   "), make_config(), db, poller
+        )
+        assert "Использование" in message.last
+        assert poller.scanned == []
+        assert await db.list_keywords() == []
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_add_keyword(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        poller = FakeScanPoller()
+        message = FakeMessage(user_id=999)
+        await cmd_addkeyword(
+            message, FakeCommand("addkeyword", "сайт"), make_config(), db, poller
+        )
+        assert "только администратору" in message.last
+        assert poller.scanned == []
+        assert await db.list_keywords() == []
