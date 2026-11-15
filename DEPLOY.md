@@ -34,7 +34,37 @@
 > Строку Neon можно вставлять как есть, вместе с `channel_binding=require`:
 > бот вырезает параметры, которые понимает только libpq, и сам включает SSL.
 
-## Шаг 3. Залейте код на GitHub
+## Шаг 3. Выберите LLM
+
+Подойдёт любой из двух вариантов.
+
+**Gemini (проще всего).** Ключ из [Google AI Studio](https://aistudio.google.com/apikey).
+`LLM_PROVIDER=gemini`, `LLM_API_KEY=<ключ>`. Модель по умолчанию —
+`gemini-1.5-flash`.
+
+**OpenAI или совместимый шлюз.** Ключ OpenAI, либо [OpenRouter](https://openrouter.ai)
+(у него есть бесплатные модели). Тогда:
+
+```
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=sk-or-...
+LLM_MODEL=nvidia/nemotron-3.5-lightning:free
+```
+
+> **Про бесплатные модели.** Они часто отвечают `429 Too Many Requests`. Бот
+> это переживает: сообщение просто не станет лидом, в логе будет предупреждение.
+> Чтобы лиды не терялись, задайте `LLM_FALLBACK_MODELS` — список моделей через
+> запятую, которые пробуются по очереди:
+>
+> ```
+> LLM_FALLBACK_MODELS=inclusionai/ling-3.2-flash:free,baidu/ernie-5.5-flash-preview:free,recursive/flint-v1.0:free
+> ```
+>
+> Платные модели вроде `openai/gpt-4o-mini` надёжнее, но на бесплатном ключе
+> OpenRouter вернут `402 Payment Required`.
+
+## Шаг 4. Залейте код на GitHub
 
 ```bash
 git init
@@ -45,7 +75,7 @@ git remote add origin https://github.com/<ваш-логин>/va-lead-radar.git
 git push -u origin main
 ```
 
-## Шаг 4. Создайте сервис в Render
+## Шаг 5. Создайте сервис в Render
 
 Проще всего через Blueprint: в `render.yaml` уже описаны команды запуска,
 health check и переменные.
@@ -78,7 +108,7 @@ health check и переменные.
 
 Те же переменные окружения добавьте на вкладке *Environment*.
 
-## Шаг 5. Проверьте, что всё работает
+## Шаг 6. Проверьте, что всё работает
 
 1. Откройте `https://<ваш-сервис>.onrender.com/health`. Должен вернуться JSON
    со `"status": "ok"`.
@@ -89,7 +119,7 @@ health check и переменные.
 4. Добавьте тестовый чат и напишите там фразу с ключевым словом. Админу должна
    прийти карточка лида.
 
-## Шаг 6. Не давайте сервису заснуть
+## Шаг 7. Не давайте сервису заснуть
 
 Бесплатный Render засыпает после ~15 минут без запросов. Проснувшись, он
 подхватит накопившиеся апдейты (мы не удаляем их), но лучше держать его

@@ -51,6 +51,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_list(name: str) -> tuple[str, ...]:
+    """Read a comma- or newline-separated list from the environment."""
+    raw = _env(name, "") or ""
+    return tuple(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
@@ -58,6 +64,9 @@ class Config:
     llm_api_key: str
     llm_provider: str = "gemini"
     llm_model: str = ""
+    # Tried in order when the primary model fails (rate limits, outages).
+    # Free OpenRouter models return 429 often, so a chain keeps the bot useful.
+    llm_fallback_models: tuple[str, ...] = ()
     openai_base_url: str = "https://api.openai.com/v1"
     db_path: Path = field(default_factory=lambda: BASE_DIR / "data" / "va_lead_radar.db")
     log_path: Path = field(default_factory=lambda: BASE_DIR / "logs" / "bot.log")
@@ -78,6 +87,16 @@ class Config:
     def model(self) -> str:
         """Model name, falling back to the provider default."""
         return self.llm_model or DEFAULT_MODELS.get(self.llm_provider, "")
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """Primary model followed by the configured fallbacks, deduplicated."""
+        ordered = (self.model, *self.llm_fallback_models)
+        seen: list[str] = []
+        for name in ordered:
+            if name and name not in seen:
+                seen.append(name)
+        return tuple(seen)
 
     @property
     def use_webhook(self) -> bool:
@@ -152,6 +171,7 @@ def load_config() -> Config:
         llm_api_key=str(llm_api_key),
         llm_provider=provider,
         llm_model=_env("LLM_MODEL", "") or "",
+        llm_fallback_models=_env_list("LLM_FALLBACK_MODELS"),
         openai_base_url=_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
         or "https://api.openai.com/v1",
         db_path=_resolve_path(_env("DB_PATH"), BASE_DIR / "data" / "va_lead_radar.db"),

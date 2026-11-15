@@ -117,28 +117,36 @@ class LeadAnalyzer:
             return LeadVerdict.fallback()
 
         snippet = text[: self._config.max_analyze_chars]
-        try:
-            if self._config.llm_provider == "openai":
-                raw = await self._call_openai(snippet)
-            else:
-                raw = await self._call_gemini(snippet)
-            verdict = parse_verdict(_extract_json(raw))
-            logger.info(
-                "LLM verdict: is_lead=%s intent=%r", verdict.is_lead, verdict.intent
-            )
-            return verdict
-        except (httpx.HTTPError, LLMError) as exc:
-            logger.error("LLM analysis failed: %s", exc)
-            return LeadVerdict.fallback()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Unexpected LLM error: %s", exc)
-            return LeadVerdict.fallback()
+        last_error: Exception | None = None
+        for model in self._config.models:
+            try:
+                if self._config.llm_provider == "openai":
+                    raw = await self._call_openai(snippet, model)
+                else:
+                    raw = await self._call_gemini(snippet, model)
+                verdict = parse_verdict(_extract_json(raw))
+                logger.info(
+                    "LLM verdict (model=%s): is_lead=%s intent=%r",
+                    model,
+                    verdict.is_lead,
+                    verdict.intent,
+                )
+                return verdict
+            except (httpx.HTTPError, LLMError) as exc:
+                last_error = exc
+                logger.warning("LLM model %s failed: %s", model, exc)
+            except Exception as exc:  # pragma: no cover - defensive
+                last_error = exc
+                logger.exception("Unexpected LLM error on %s: %s", model, exc)
+
+        logger.error("All LLM models failed; last error: %s", last_error)
+        return LeadVerdict.fallback()
 
     # ---- providers -----------------------------------------------------
-    async def _call_gemini(self, text: str) -> str:
+    async def _call_gemini(self, text: str, model: str) -> str:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self._config.model}:generateContent"
+            f"{model}:generateContent"
         )
         payload = {
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -162,10 +170,10 @@ class LeadAnalyzer:
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"unexpected Gemini response shape: {data}") from exc
 
-    async def _call_openai(self, text: str) -> str:
+    async def _call_openai(self, text: str, model: str) -> str:
         url = f"{self._config.openai_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._config.model,
+            "model": model,
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
             "messages": [

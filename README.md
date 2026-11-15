@@ -61,6 +61,8 @@ python bot.py
 | `LLM_API_KEY` | да | Ключ Gemini или OpenAI. |
 | `LLM_PROVIDER` | нет | `gemini` (по умолчанию) или `openai`. |
 | `LLM_MODEL` | нет | Модель. По умолчанию `gemini-1.5-flash` или `gpt-4o-mini`. |
+| `LLM_FALLBACK_MODELS` | нет | Список моделей через запятую — пробуются по очереди, если основная не ответила (лимиты, сбои). Полезно на бесплатных тарифах. |
+| `OPENAI_BASE_URL` | нет | Свой OpenAI-совместимый шлюз (например, OpenRouter). |
 | `DATABASE_URL` | для хостинга | Строка подключения Postgres, вместе с `?sslmode=require`. Пусто — используется SQLite. |
 | `DB_PATH` | нет | Путь к файлу SQLite. По умолчанию `data/va_lead_radar.db`. |
 | `WEBHOOK_BASE_URL` | для хостинга | Публичный `https`-адрес сервиса. Пусто — long polling. |
