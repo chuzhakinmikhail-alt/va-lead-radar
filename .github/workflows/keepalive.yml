@@ -1,26 +1,35 @@
-# Optional keep-alive ping for the deployed bot's /health endpoint.
+# Wake the deployed bot on a schedule so its poller actually runs.
 #
-# Read this before enabling the schedule below.
+# Why this exists: Render's free web service sleeps after ~15 minutes without
+# inbound traffic, and the platform's own health checks do NOT count as traffic.
+# A sleeping instance runs no poll cycles, so leads stop arriving. Measured on
+# this service before the fix: three poll cycles in 34 hours, with dead windows
+# of 9.7 h and 23.7 h. Pinging /health from outside wakes the instance, which
+# cold-starts main.py and immediately runs one poll cycle.
 #
-# On a PRIVATE repository, scheduled jobs consume your GitHub Actions minutes
-# (2,000/month on GitHub Free) and every job is rounded up to a full minute.
-# A ping every 10 minutes is ~4,320 runs/month - more than twice the free quota -
-# so it would drain the allowance and break your other workflows. A schedule slow
-# enough to fit the quota (> ~21 min) cannot keep Render awake anyway, because
-# Render's free tier sleeps after 15 idle minutes.
+# Cost, and why the schedule is not tighter: Render gives the whole workspace
+# 750 free instance-hours per month, shared by every free service in it (this
+# workspace runs eleven). A ping keeps the instance awake for ~15 minutes, so an
+# hourly ping would burn ~180 h/month and a 5-minute ping ~720 h/month - the
+# latter would exhaust the pool and suspend every other free service. Every two
+# hours costs ~90 h/month and caps worst-case latency at two hours.
 #
-# => On a private repo use a free external monitor instead: cron-job.org or
-#    UptimeRobot (5-minute checks, no cost). See DEPLOY.md, step 6.
-# => Scheduled runners are unlimited for PUBLIC repositories, so if this repo is
-#    public you can safely uncomment the schedule.
-#
-# Kept for manual runs and for public repos.
+# Losing nothing between wakes is handled in code, not here: the tg_public
+# source reads several preview pages back (TG_HISTORY_PAGES), so a wake recovers
+# the posts that appeared while the instance slept. Raise the frequency below if
+# the workspace has hour headroom; lower it if other services start being
+# suspended. On a private repo, scheduled runs consume Actions minutes, so use a
+# free external monitor (cron-job.org, UptimeRobot) instead.
 name: keepalive
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "*/10 * * * *"
+    inputs:
+      url:
+        description: Health URL to ping (defaults to the deployed service)
+        required: false
+  schedule:
+    - cron: "0 */2 * * *"
 
 jobs:
   ping:
@@ -28,18 +37,16 @@ jobs:
     steps:
       - name: Ping health endpoint
         run: |
-          url="${{ vars.BOT_HEALTH_URL }}"
-          if [ -z "$url" ]; then
-            echo "BOT_HEALTH_URL variable is not set; skipping."
-            exit 0
-          fi
-          code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 30 "$url")
+          url="${{ inputs.url || vars.BOT_HEALTH_URL || 'https://va-lead-radar.onrender.com/health' }}"
+          echo "Pinging $url"
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 60 "$url")
           echo "HTTP $code"
           cat /tmp/health.json || true
-          # A cold free instance may need a retry on the very first request.
+          # A cold free instance can be slow to wake, so retry once before failing.
           if [ "$code" != "200" ]; then
             sleep 20
-            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 30 "$url")
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 60 "$url")
             echo "retry HTTP $code"
+            cat /tmp/health.json || true
           fi
           test "$code" = "200"

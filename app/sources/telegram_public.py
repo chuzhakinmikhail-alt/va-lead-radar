@@ -38,6 +38,20 @@ _AUTHOR = re.compile(
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{5,32}$")
 
+_POST_ID_RE = re.compile(r"/(\d+)$")
+
+# The preview shows ~20 posts per page. On a free host the instance sleeps, so
+# two polls can be hours apart and a busy channel would scroll its older orders
+# out of the window. Walking back a few pages closes that gap; the anti-duplicate
+# hash makes the overlap between runs harmless.
+DEFAULT_HISTORY_PAGES = 3
+
+
+def oldest_post_id(items: list[LeadItem]) -> int | None:
+    """Lowest message id on a page, which is the ``before`` cursor for the next."""
+    ids = [int(m.group(1)) for i in items if (m := _POST_ID_RE.search(i.external_id))]
+    return min(ids) if ids else None
+
 
 def normalise_channel(target: str) -> str:
     """Accept ``name``, ``@name`` or a ``t.me`` URL; return the bare name."""
@@ -107,28 +121,55 @@ class TelegramPublicSource(Source):
 
     kind = "tg_public"
 
-    def __init__(self, target: str, title: str = "") -> None:
+    def __init__(self, target: str, title: str = "", history_pages: int = 1) -> None:
         super().__init__(normalise_channel(target), title)
+        # 1 page is the live preview window; more pages reach further back, which
+        # matters when the host sleeps between polls.
+        self.history_pages = max(1, int(history_pages))
+
+    async def _fetch_page(self, client: httpx.AsyncClient, before: int | None) -> list[LeadItem]:
+        url = f"https://t.me/s/{self.target}"
+        if before is not None:
+            url = f"{url}?before={before}"
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("Telegram preview fetch failed for %s: %s", url, exc)
+            return []
+        return parse_channel_page(resp.text, self.target)
 
     async def fetch(self, client: httpx.AsyncClient) -> list[LeadItem]:
         if not is_valid_channel(self.target):
             logger.warning("Not a usable public channel name: %r", self.target)
             return []
 
-        url = f"https://t.me/s/{self.target}"
-        try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.warning("Telegram preview fetch failed for %s: %s", self.target, exc)
-            return []
+        collected: dict[str, LeadItem] = {}
+        before: int | None = None
 
-        items = parse_channel_page(resp.text, self.target)
+        for page in range(self.history_pages):
+            items = await self._fetch_page(client, before)
+            if not items:
+                break
+            for item in items:
+                collected.setdefault(item.external_id, item)
+            cursor = oldest_post_id(items)
+            # A page that repeats the previous one means the history is exhausted.
+            if cursor is None or cursor == before:
+                break
+            before = cursor
+
+        items = list(collected.values())
         if not items:
             logger.info(
                 "Telegram channel %s yielded no posts (private, empty or renamed)",
                 self.target,
             )
         else:
-            logger.info("Telegram channel %s: %d post(s)", self.target, len(items))
+            logger.info(
+                "Telegram channel %s: %d post(s) over %d page(s)",
+                self.target,
+                len(items),
+                min(page + 1, self.history_pages),
+            )
         return items

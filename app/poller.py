@@ -131,7 +131,11 @@ class Poller:
 
         for row in rows:
             source = create_source(
-                row.kind, row.target, row.title, userbot_session=self._userbot_session
+                row.kind,
+                row.target,
+                row.title,
+                userbot_session=self._userbot_session,
+                tg_history_pages=self._config.tg_history_pages,
             )
             if source is None:
                 logger.warning("Unknown source kind %r; skipped", row.kind)
@@ -193,7 +197,11 @@ class Poller:
         async with self._scan_lock:
             for row in rows:
                 source = create_source(
-                    row.kind, row.target, row.title, userbot_session=self._userbot_session
+                    row.kind,
+                    row.target,
+                    row.title,
+                    userbot_session=self._userbot_session,
+                    tg_history_pages=self._config.tg_history_pages,
                 )
                 if source is None:
                     continue

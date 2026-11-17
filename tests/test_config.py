@@ -22,6 +22,8 @@ _TOUCHED = [
     "LOG_PATH",
     "LOG_LEVEL",
     "MAX_ANALYZE_CHARS",
+    "MAX_ITEM_AGE_DAYS",
+    "TG_HISTORY_PAGES",
     "WEBHOOK_BASE_URL",
     "WEBHOOK_SECRET",
     "WEBHOOK_PATH",
@@ -70,6 +72,19 @@ def test_database_url_switches_to_postgres(clean_env):
         clean_env.setenv(k, v)
     clean_env.setenv("DATABASE_URL", "postgresql://u:p@h/db?sslmode=require")
     assert load_config().use_postgres is True
+
+
+def test_tg_history_pages_default_and_override(clean_env):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    assert load_config().tg_history_pages == 5
+
+    clean_env.setenv("TG_HISTORY_PAGES", "8")
+    assert load_config().tg_history_pages == 8
+
+    # A nonsensical value must not disable the history walk entirely.
+    clean_env.setenv("TG_HISTORY_PAGES", "0")
+    assert load_config().tg_history_pages == 1
 
 
 def test_render_external_url_enables_webhook(clean_env):

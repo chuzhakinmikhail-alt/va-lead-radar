@@ -43,6 +43,10 @@ services:
         value: "true"
       - key: POLL_INTERVAL
         value: "900"
+      # How many ~20-post preview pages of a public channel to read per cycle.
+      # Covers the posts that appeared while the free instance was asleep.
+      - key: TG_HISTORY_PAGES
+        value: "5"
       # Ignore postings older than this. A dead feed keeps serving its last
       # post, which would otherwise arrive as a fresh lead.
       - key: MAX_ITEM_AGE_DAYS

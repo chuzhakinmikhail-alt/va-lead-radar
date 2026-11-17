@@ -59,14 +59,14 @@ DEFAULT_SOURCES: tuple[tuple[str, str, str], ...] = (
 
 
 def create_source(
-    kind: str, target: str, title: str = "", userbot_session=None
+    kind: str, target: str, title: str = "", userbot_session=None, tg_history_pages: int = 1
 ) -> Source | None:
     """Build a source object, or ``None`` when the kind is unknown."""
     kind = (kind or "").strip().lower()
     if kind == "rss":
         return RssSource(target, title)
     if kind == "tg_public":
-        return TelegramPublicSource(target, title)
+        return TelegramPublicSource(target, title, history_pages=tg_history_pages)
     if kind == "userbot":
         return TelegramUserbotSource(target, title, session=userbot_session)
     return None

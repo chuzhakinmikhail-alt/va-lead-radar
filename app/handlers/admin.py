@@ -338,6 +338,7 @@ async def _settings_payload(config: Config, db: Database) -> dict:
             "enabled": config.poll_sources,
             "interval_seconds": config.poll_interval,
             "max_item_age_days": config.max_item_age_days,
+            "tg_history_pages": config.tg_history_pages,
             "seed_defaults": config.seed_default_sources,
         },
         "userbot_configured": bool(
@@ -408,6 +409,9 @@ async def _settings_text(config: Config, db: Database) -> str:
         f"<b>Максимальный возраст объявления:</b> "
         f"{data['polling']['max_item_age_days']} дн. "
         f"(0 — без ограничения)",
+        f"<b>Страниц истории канала за цикл:</b> "
+        f"{data['polling']['tg_history_pages']} "
+        f"(страховка от пропусков, пока сервис спит)",
         f"<b>Userbot:</b> "
         f"{'настроен' if data['userbot_configured'] else 'не настроен'}",
         "",
