@@ -148,29 +148,35 @@ async def on_message(
             logger.info("Not a lead (chat %s): %s", chat_id, matched)
             return
 
-        if not config.admin_id:
+        if not config.recipients:
             logger.warning(
-                "Lead detected (chat=%s msg=%s) but ADMIN_ID is not set; "
+                "Lead detected (chat=%s msg=%s) but no admin is configured; "
                 "card not delivered.",
                 chat_id,
                 message.message_id,
             )
             return
 
-        try:
-            await bot.send_message(
-                config.admin_id,
-                format_lead_card(message, verdict, matched),
-                disable_web_page_preview=True,
-            )
+        card = format_lead_card(message, verdict, matched)
+        delivered = 0
+        for admin_id in config.recipients:
+            try:
+                await bot.send_message(
+                    admin_id, card, disable_web_page_preview=True
+                )
+                delivered += 1
+            except Exception as exc:  # one unreachable admin must not stop the rest
+                logger.error(
+                    "Failed to send lead card to admin %s: %s", admin_id, exc
+                )
+        if delivered:
             logger.info(
-                "Lead forwarded to admin (chat=%s msg=%s intent=%r)",
+                "Lead forwarded to %s admin(s) (chat=%s msg=%s intent=%r)",
+                delivered,
                 chat_id,
                 message.message_id,
                 verdict.intent,
             )
-        except Exception as exc:
-            logger.error("Failed to send lead card to admin: %s", exc)
 
     except Exception as exc:  # never let one message kill the dispatcher
         logger.exception("Error while processing message in chat %s: %s", chat_id, exc)

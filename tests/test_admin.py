@@ -146,3 +146,32 @@ async def test_pause_command_rejects_non_admin(tmp_path):
 
         assert "только администратору" in message.answers[0]
         assert await db.is_monitored(-1001) is True
+
+
+@pytest.mark.asyncio
+async def test_extra_admin_can_run_commands(tmp_path):
+    """ADMIN_IDS grants command access, not just delivery."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_chat(-1001, "Dev Chat")
+        message = FakeMessage(chat_id=-1001, chat_type="supergroup", user_id=777)
+
+        await cmd_pause(
+            message, FakeCommand("pause"), make_config(admin_ids=(777,)), db
+        )
+
+        assert await db.is_monitored(-1001) is False
+        assert not any("только администратору" in a for a in message.answers)
+
+
+@pytest.mark.asyncio
+async def test_stranger_still_rejected_with_extra_admins(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_chat(-1001, "Dev Chat")
+        message = FakeMessage(chat_id=-1001, chat_type="supergroup", user_id=999)
+
+        await cmd_pause(
+            message, FakeCommand("pause"), make_config(admin_ids=(777,)), db
+        )
+
+        assert "только администратору" in message.answers[0]
+        assert await db.is_monitored(-1001) is True

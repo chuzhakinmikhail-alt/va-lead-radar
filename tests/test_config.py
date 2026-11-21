@@ -15,6 +15,7 @@ _TOUCHED = [
     "BOT_TOKEN",
     "LLM_API_KEY",
     "ADMIN_ID",
+    "ADMIN_IDS",
     "LLM_PROVIDER",
     "LLM_MODEL",
     "DATABASE_URL",
@@ -112,3 +113,31 @@ def test_invalid_provider_rejected(clean_env):
     clean_env.setenv("LLM_PROVIDER", "anthropic")
     with pytest.raises(ConfigError):
         load_config()
+
+
+def test_admin_ids_parsed_and_merged(clean_env):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    assert load_config().recipients == (42,)
+
+    clean_env.setenv("ADMIN_IDS", "777, 888 ,777")
+    cfg = load_config()
+    # Duplicates collapse and ADMIN_ID stays first.
+    assert cfg.recipients == (42, 777, 888)
+    assert cfg.is_admin(888) and not cfg.is_admin(999)
+
+
+def test_admin_ids_ignores_garbage(clean_env):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("ADMIN_IDS", "abc,-5,0,777")
+    assert load_config().recipients == (42, 777)
+
+
+def test_no_admin_configured_means_no_recipients(clean_env):
+    for k, v in REQUIRED.items():
+        if k != "ADMIN_ID":
+            clean_env.setenv(k, v)
+    cfg = load_config()
+    assert cfg.recipients == ()
+    assert not cfg.is_admin(42)

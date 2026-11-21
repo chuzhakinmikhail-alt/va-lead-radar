@@ -149,7 +149,7 @@ def create_app(runtime: Runtime) -> web.Application:
                 "bot": SERVICE_NAME,
                 "mode": "webhook",
                 "version": build_version(),
-                "admin_configured": config.admin_id > 0,
+                "admin_configured": bool(config.recipients),
                 "monitor_all_chats": config.monitor_all_chats,
                 "storage": "postgres" if config.use_postgres else "sqlite",
                 "stats": stats,

@@ -85,7 +85,8 @@ health check и переменные.
 2. Render прочитает `render.yaml` и попросит заполнить переменные со
    `sync: false`:
    - `BOT_TOKEN` — токен от @BotFather;
-   - `ADMIN_ID` — ваш Telegram ID;
+   - `ADMIN_ID` — ваш Telegram ID (необязательно `ADMIN_IDS` — ещё админы
+     через запятую);
    - `LLM_API_KEY` — ключ Gemini или OpenAI;
    - `DATABASE_URL` — строка из Neon (шаг 2).
 3. Нажмите **Apply**. Render соберёт проект и запустит `python main.py`.
@@ -164,7 +165,8 @@ Render пересобирает сервис на каждый push в ветк�
 | `secret token contains illegal characters` | Значение `WEBHOOK_SECRET` содержит символы, недопустимые в Telegram. Бот хэширует секрет, поэтому такой ошибки быть не должно — убедитесь, что развёрнута актуальная версия `main.py`. |
 | Бот не видит обычные сообщения в группе | Не отключён privacy mode (шаг 1). |
 | `DATABASE_URL is not set` при старте | Бот отказывается работать на Render с SQLite: диск стирается, лиды потерялись бы. Добавьте `DATABASE_URL`. |
-| Лиды приходят, но карточек нет | Не задан `ADMIN_ID`. В логе будет предупреждение. |
+| Лиды приходят, но карточек нет | Не задан ни `ADMIN_ID`, ни `ADMIN_IDS`. В логе будет предупреждение. |
+| «⛔ Команда доступна только администратору» | Ваш ID не указан в `ADMIN_ID`/`ADMIN_IDS`. Узнайте его через @userinfobot и добавьте. |
 | `LLM analysis failed` | Неверный `LLM_API_KEY` или закончилась квота. Смотрите логи. |
 
 ## Переключение на long polling

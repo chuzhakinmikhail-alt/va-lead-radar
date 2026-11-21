@@ -342,23 +342,30 @@ class Poller:
         contact_lines: list[str],
         url: str,
     ) -> bool:
-        if not self._config.admin_id:
+        if not self._config.recipients:
             logger.warning(
-                "Lead found in %s but ADMIN_ID is not set; card not delivered",
+                "Lead found in %s but no admin is configured; card not delivered",
                 item.source_id,
             )
             return False
 
         card = format_source_card(item, verdict, matched, contact_lines, url)
-        try:
-            await self._bot.send_message(
-                self._config.admin_id, card, disable_web_page_preview=True
-            )
-        except TelegramAPIError as exc:
-            logger.error("Could not send source lead card: %s", exc)
+        delivered = 0
+        for admin_id in self._config.recipients:
+            try:
+                await self._bot.send_message(
+                    admin_id, card, disable_web_page_preview=True
+                )
+                delivered += 1
+            except TelegramAPIError as exc:
+                logger.error("Could not send source lead card to %s: %s", admin_id, exc)
+        if not delivered:
             return False
         logger.info(
-            "Source lead sent (%s, intent=%r)", item.source_id, verdict.intent
+            "Source lead sent (%s, intent=%r) to %s admin(s)",
+            item.source_id,
+            verdict.intent,
+            delivered,
         )
         return True
 

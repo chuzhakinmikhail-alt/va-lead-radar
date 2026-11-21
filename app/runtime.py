@@ -138,10 +138,11 @@ async def build_runtime(config: Config) -> Runtime:
     dispatcher.include_router(admin.router)
     dispatcher.include_router(monitor.router)
 
-    if not config.admin_id:
+    if not config.recipients:
         logger.warning(
-            "ADMIN_ID is not set: leads are recorded but no cards are delivered. "
-            "Set ADMIN_ID and redeploy."
+            "Neither ADMIN_ID nor ADMIN_IDS is set: leads are recorded but no "
+            "cards are delivered, and no one can use the commands. Set ADMIN_ID "
+            "and redeploy."
         )
 
     return Runtime(

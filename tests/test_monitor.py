@@ -201,3 +201,52 @@ async def test_manual_mode_still_requires_addchat(tmp_path):
 
         assert bot.sent == [] and analyzer.calls == 0
         assert await db.list_chats() == []
+
+
+@pytest.mark.asyncio
+async def test_lead_is_forwarded_to_every_admin(tmp_path):
+    """ADMIN_IDS is a team list: each admin gets the card, once."""
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_chat(-1001, "Dev Chat")
+        await db.add_keyword("нужен бот")
+        bot = FakeBot()
+        analyzer = FakeAnalyzer(LeadVerdict(True, "Хочет бота", "разработка бота"))
+        cfg = Config(
+            bot_token="1:abc",
+            admin_id=42,
+            admin_ids=(777, 888),
+            llm_api_key="k",
+            llm_provider="openai",
+        )
+
+        await on_message(make_message("Привет, нужен бот для магазина"), bot, cfg, db, analyzer)
+
+        assert sorted(admin for admin, _ in bot.sent) == [42, 777, 888]
+
+
+@pytest.mark.asyncio
+async def test_one_unreachable_admin_does_not_block_the_others(tmp_path):
+    """A blocked bot (user never started it) must not silence the rest."""
+
+    class PartiallyFailingBot(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            if chat_id == 777:
+                raise RuntimeError("Forbidden: bot was blocked by the user")
+            await super().send_message(chat_id, text, **kwargs)
+
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_chat(-1001, "Dev Chat")
+        await db.add_keyword("нужен бот")
+        bot = PartiallyFailingBot()
+        analyzer = FakeAnalyzer(LeadVerdict(True, "Хочет бота", "разработка бота"))
+        cfg = Config(
+            bot_token="1:abc",
+            admin_id=42,
+            admin_ids=(777, 888),
+            llm_api_key="k",
+            llm_provider="openai",
+        )
+
+        await on_message(make_message("Привет, нужен бот для магазина"), bot, cfg, db, analyzer)
+
+        assert [admin for admin, _ in bot.sent] == [42, 888]

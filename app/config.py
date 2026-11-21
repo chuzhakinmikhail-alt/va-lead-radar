@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -90,11 +93,29 @@ def _env_list(name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip())
 
 
+def _env_id_list(name: str) -> tuple[int, ...]:
+    """Read a list of Telegram user ids; unparsable entries are ignored."""
+    ids: list[int] = []
+    for raw in _env_list(name):
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Ignoring %s entry that is not a number: %r", name, raw)
+            continue
+        if value > 0 and value not in ids:
+            ids.append(value)
+    return tuple(ids)
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
     admin_id: int
     llm_api_key: str
+    # Extra admins. Everyone listed here can run the admin commands and receives
+    # lead cards, so a team can share one bot. ADMIN_ID stays the primary id, so
+    # a single-operator setup behaves exactly as before.
+    admin_ids: tuple[int, ...] = ()
     llm_provider: str = "gemini"
     llm_model: str = ""
     # Tried in order when the primary model fails (rate limits, outages).
@@ -162,6 +183,23 @@ class Config:
     def use_postgres(self) -> bool:
         return bool(self.database_url)
 
+    @property
+    def recipients(self) -> tuple[int, ...]:
+        """Everyone who gets lead cards and may run admin commands.
+
+        ``admin_id`` comes first and is dropped when it is 0 (not configured).
+        """
+        ordered = ((self.admin_id,) if self.admin_id else ()) + self.admin_ids
+        seen: list[int] = []
+        for value in ordered:
+            if value and value not in seen:
+                seen.append(value)
+        return tuple(seen)
+
+    def is_admin(self, user_id: int | None) -> bool:
+        """True when ``user_id`` may use the admin commands."""
+        return user_id is not None and user_id in self.recipients
+
 
 def _resolve_path(raw: str | None, default: Path) -> Path:
     if not raw:
@@ -196,6 +234,7 @@ def load_config() -> Config:
         )
 
     admin_id = _env_int("ADMIN_ID", 0)
+    admin_ids = _env_id_list("ADMIN_IDS")
 
     provider = (_env("LLM_PROVIDER", "gemini") or "gemini").lower()
     if provider not in SUPPORTED_PROVIDERS:
@@ -223,6 +262,7 @@ def load_config() -> Config:
     return Config(
         bot_token=str(bot_token),
         admin_id=admin_id,
+        admin_ids=admin_ids,
         llm_api_key=str(llm_api_key),
         llm_provider=provider,
         llm_model=_env("LLM_MODEL", "") or "",

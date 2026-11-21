@@ -24,12 +24,20 @@ router = Router(name="admin")
 
 
 def _is_admin(message: Message, config: Config) -> bool:
-    return message.from_user is not None and message.from_user.id == config.admin_id
+    return config.is_admin(message.from_user.id if message.from_user else None)
 
 
 async def _guard(message: Message, config: Config) -> bool:
     if _is_admin(message, config):
         return True
+    if not config.recipients:
+        # Without any admin configured nobody could use the bot at all, so say
+        # what is actually wrong instead of blaming the user's permissions.
+        await message.answer(
+            "⚙️ Администратор не настроен: задайте <code>ADMIN_ID</code> "
+            "(или <code>ADMIN_IDS</code>) в переменных окружения."
+        )
+        return False
     await message.answer("⛔ Команда доступна только администратору.")
     logger.warning(
         "Unauthorized command from user_id=%s",
@@ -352,7 +360,8 @@ async def _settings_payload(config: Config, db: Database) -> dict:
         },
         "storage": "postgres" if config.use_postgres else "sqlite",
         "mode": "webhook" if config.use_webhook else "polling",
-        "admin_configured": config.admin_id > 0,
+        "admin_configured": bool(config.recipients),
+        "admins": list(config.recipients),
         "max_analyze_chars": config.max_analyze_chars,
         "log_level": config.log_level,
         "stats": stats,
@@ -375,6 +384,7 @@ async def _settings_json(config: Config, db: Database) -> str:
         "MAX_ANALYZE_CHARS": str(config.max_analyze_chars),
         "LOG_LEVEL": config.log_level,
         "ADMIN_ID": str(config.admin_id),
+        "ADMIN_IDS": ",".join(str(a) for a in config.admin_ids),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -400,7 +410,8 @@ async def _settings_text(config: Config, db: Database) -> str:
     lines += [
         f"<b>Хранилище:</b> {data['storage']}",
         f"<b>Режим:</b> {data['mode']}",
-        f"<b>Админ задан:</b> {'да' if data['admin_configured'] else 'нет'}",
+        f"<b>Админы:</b> "
+        f"{', '.join(str(a) for a in data['admins']) if data['admins'] else 'не заданы'}",
         f"<b>Лимит текста:</b> {data['max_analyze_chars']} символов",
         "",
         f"<b>Опрос источников:</b> "
