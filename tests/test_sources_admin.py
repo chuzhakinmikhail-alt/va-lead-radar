@@ -214,11 +214,14 @@ async def test_poll_without_poller_is_reported(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_non_admin_cannot_add_source(tmp_path):
+async def test_non_admin_cannot_add_source_when_closed(tmp_path):
     async with SQLiteDatabase(tmp_path / "t.db") as db:
         message = FakeMessage(user_id=999)
         await cmd_addsource(
-            message, FakeCommand("addsource", "rss https://x/feed"), make_config(), db
+            message,
+            FakeCommand("addsource", "rss https://x/feed"),
+            make_config(open_commands=False),
+            db,
         )
         assert "только администратору" in message.last
         assert await db.list_sources() == []
@@ -315,12 +318,16 @@ async def test_addkeyword_rejects_an_empty_keyword(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_non_admin_cannot_add_keyword(tmp_path):
+async def test_non_admin_cannot_add_keyword_when_closed(tmp_path):
     async with SQLiteDatabase(tmp_path / "t.db") as db:
         poller = FakeScanPoller()
         message = FakeMessage(user_id=999)
         await cmd_addkeyword(
-            message, FakeCommand("addkeyword", "сайт"), make_config(), db, poller
+            message,
+            FakeCommand("addkeyword", "сайт"),
+            make_config(open_commands=False),
+            db,
+            poller,
         )
         assert "только администратору" in message.last
         assert poller.scanned == []

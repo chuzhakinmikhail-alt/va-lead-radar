@@ -141,3 +141,22 @@ def test_no_admin_configured_means_no_recipients(clean_env):
     cfg = load_config()
     assert cfg.recipients == ()
     assert not cfg.is_admin(42)
+
+
+def test_commands_are_open_by_default(clean_env):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    cfg = load_config()
+    assert cfg.open_commands is True
+    assert cfg.can_manage(999) is True  # a stranger may manage
+    assert cfg.is_admin(999) is False  # but is not an admin
+
+
+def test_open_commands_can_be_closed(clean_env):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("OPEN_COMMANDS", "false")
+    cfg = load_config()
+    assert cfg.open_commands is False
+    assert cfg.can_manage(999) is False
+    assert cfg.can_manage(42) is True

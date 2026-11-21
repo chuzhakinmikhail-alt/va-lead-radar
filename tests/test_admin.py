@@ -14,6 +14,7 @@ from app.handlers.admin import (
     _settings_json,
     _settings_text,
     cmd_pause,
+    cmd_poll,
 )
 
 SECRET = "sk-super-secret-key"
@@ -137,12 +138,25 @@ async def test_pause_command_reports_unknown_chat(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pause_command_rejects_non_admin(tmp_path):
+async def test_commands_are_open_to_everyone_by_default(tmp_path):
     async with SQLiteDatabase(tmp_path / "t.db") as db:
         await db.add_chat(-1001, "Dev Chat")
         message = FakeMessage(chat_id=-1001, chat_type="supergroup", user_id=999)
 
         await cmd_pause(message, FakeCommand("pause"), make_config(), db)
+
+        assert not any("только администратору" in a for a in message.answers)
+        assert await db.is_monitored(-1001) is False
+
+
+@pytest.mark.asyncio
+async def test_open_commands_false_restores_the_admin_gate(tmp_path):
+    async with SQLiteDatabase(tmp_path / "t.db") as db:
+        await db.add_chat(-1001, "Dev Chat")
+        message = FakeMessage(chat_id=-1001, chat_type="supergroup", user_id=999)
+        cfg = make_config(open_commands=False)
+
+        await cmd_pause(message, FakeCommand("pause"), cfg, db)
 
         assert "только администратору" in message.answers[0]
         assert await db.is_monitored(-1001) is True
@@ -164,14 +178,23 @@ async def test_extra_admin_can_run_commands(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stranger_still_rejected_with_extra_admins(tmp_path):
+async def test_stranger_rejected_when_commands_are_closed(tmp_path):
     async with SQLiteDatabase(tmp_path / "t.db") as db:
         await db.add_chat(-1001, "Dev Chat")
         message = FakeMessage(chat_id=-1001, chat_type="supergroup", user_id=999)
+        cfg = make_config(admin_ids=(777,), open_commands=False)
 
-        await cmd_pause(
-            message, FakeCommand("pause"), make_config(admin_ids=(777,)), db
-        )
+        await cmd_pause(message, FakeCommand("pause"), cfg, db)
 
         assert "только администратору" in message.answers[0]
         assert await db.is_monitored(-1001) is True
+
+
+@pytest.mark.asyncio
+async def test_poll_stays_admin_only_even_when_open():
+    """A full poll burns LLM quota, so it is not opened to everyone."""
+    message = FakeMessage(user_id=999)
+
+    await cmd_poll(message, make_config(), poller=None)
+
+    assert "только для администратора" in message.answers[0]

@@ -23,10 +23,13 @@ services:
       # Telegram numeric user id of the admin who receives lead cards.
       - key: ADMIN_ID
         sync: false
-      # Optional: more admins, comma-separated. Each one gets lead cards and can
-      # use the commands, so a team can share one bot.
+      # Optional: more admins, comma-separated. Each one gets lead cards.
       # - key: ADMIN_IDS
       #   value: "123456789,987654321"
+      # Commands are open to everyone. Set to false to restrict them to the
+      # admins above (/poll is always admin-only).
+      - key: OPEN_COMMANDS
+        value: "true"
       # LLM key: Gemini (default) or OpenAI, depending on LLM_PROVIDER.
       - key: LLM_API_KEY
         sync: false

@@ -28,19 +28,31 @@ def _is_admin(message: Message, config: Config) -> bool:
 
 
 async def _guard(message: Message, config: Config) -> bool:
-    if _is_admin(message, config):
+    """Let the caller run a command.
+
+    Commands are open to everyone by default (``OPEN_COMMANDS``). When that is
+    turned off, only ``ADMIN_ID`` / ``ADMIN_IDS`` get through.
+    """
+    if config.can_manage(message.from_user.id if message.from_user else None):
         return True
-    if not config.recipients:
-        # Without any admin configured nobody could use the bot at all, so say
-        # what is actually wrong instead of blaming the user's permissions.
-        await message.answer(
-            "⚙️ Администратор не настроен: задайте <code>ADMIN_ID</code> "
-            "(или <code>ADMIN_IDS</code>) в переменных окружения."
-        )
-        return False
     await message.answer("⛔ Команда доступна только администратору.")
     logger.warning(
         "Unauthorized command from user_id=%s",
+        message.from_user.id if message.from_user else "unknown",
+    )
+    return False
+
+
+async def _admin_guard(message: Message, config: Config) -> bool:
+    """Stricter gate for commands that cost LLM quota when abused."""
+    if _is_admin(message, config):
+        return True
+    await message.answer(
+        "⛔ Эта команда только для администратора: она запускает полный опрос "
+        "источников и тратит квоту LLM. Остальные команды доступны всем."
+    )
+    logger.warning(
+        "Unauthorized admin-only command from user_id=%s",
         message.from_user.id if message.from_user else "unknown",
     )
     return False
@@ -298,12 +310,7 @@ async def cmd_settings(message: Message, config: Config, db: Database) -> None:
 
 @router.message(Command("export"))
 async def cmd_export(message: Message, config: Config, db: Database) -> None:
-    if not _is_admin(message, config):
-        await message.answer("⛔ Команда доступна только администратору.")
-        logger.warning(
-            "Unauthorized /export from user_id=%s",
-            message.from_user.id if message.from_user else "unknown",
-        )
+    if not await _guard(message, config):
         return
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
@@ -362,6 +369,7 @@ async def _settings_payload(config: Config, db: Database) -> dict:
         "mode": "webhook" if config.use_webhook else "polling",
         "admin_configured": bool(config.recipients),
         "admins": list(config.recipients),
+        "open_commands": config.open_commands,
         "max_analyze_chars": config.max_analyze_chars,
         "log_level": config.log_level,
         "stats": stats,
@@ -385,6 +393,7 @@ async def _settings_json(config: Config, db: Database) -> str:
         "LOG_LEVEL": config.log_level,
         "ADMIN_ID": str(config.admin_id),
         "ADMIN_IDS": ",".join(str(a) for a in config.admin_ids),
+        "OPEN_COMMANDS": str(config.open_commands).lower(),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -412,6 +421,8 @@ async def _settings_text(config: Config, db: Database) -> str:
         f"<b>Режим:</b> {data['mode']}",
         f"<b>Админы:</b> "
         f"{', '.join(str(a) for a in data['admins']) if data['admins'] else 'не заданы'}",
+        f"<b>Команды:</b> "
+        f"{'доступны всем' if data['open_commands'] else 'только админам'}",
         f"<b>Лимит текста:</b> {data['max_analyze_chars']} символов",
         "",
         f"<b>Опрос источников:</b> "
@@ -621,7 +632,7 @@ async def cmd_pause_source(
 
 @router.message(Command("poll"))
 async def cmd_poll(message: Message, config: Config, poller) -> None:
-    if not await _guard(message, config):
+    if not await _admin_guard(message, config):
         return
 
     if poller is None:

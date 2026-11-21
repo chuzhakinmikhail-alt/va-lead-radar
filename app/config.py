@@ -130,6 +130,9 @@ class Config:
     # Auto-monitor every chat the bot is added to, instead of requiring
     # /addchat. Chats are registered on their first message; /pause withdraws one.
     monitor_all_chats: bool = False
+    # Admin commands are open to everyone by default. Set OPEN_COMMANDS=false to
+    # restrict them to ADMIN_ID / ADMIN_IDS again.
+    open_commands: bool = True
     # Poll external sources (freelance feeds, public Telegram channels) so the
     # bot finds orders on its own, without being added to any chat.
     poll_sources: bool = True
@@ -197,8 +200,16 @@ class Config:
         return tuple(seen)
 
     def is_admin(self, user_id: int | None) -> bool:
-        """True when ``user_id`` may use the admin commands."""
+        """True when ``user_id`` is a configured admin (owner or ADMIN_IDS)."""
         return user_id is not None and user_id in self.recipients
+
+    def can_manage(self, user_id: int | None) -> bool:
+        """True when ``user_id`` may run the commands.
+
+        Open by default so anyone the bot talks to can manage it. With
+        OPEN_COMMANDS=false this falls back to the admin list.
+        """
+        return self.open_commands or self.is_admin(user_id)
 
 
 def _resolve_path(raw: str | None, default: Path) -> Path:
@@ -274,6 +285,7 @@ def load_config() -> Config:
         log_level=(_env("LOG_LEVEL", "INFO") or "INFO").upper(),
         max_analyze_chars=max(200, _env_int("MAX_ANALYZE_CHARS", 4000)),
         monitor_all_chats=_env_bool("MONITOR_ALL_CHATS", False),
+        open_commands=_env_bool("OPEN_COMMANDS", True),
         poll_sources=_env_bool("POLL_SOURCES", True),
         poll_interval=max(60, _env_int("POLL_INTERVAL", 900)),
         max_item_age_days=max(0, _env_int("MAX_ITEM_AGE_DAYS", 30)),
